@@ -193,7 +193,10 @@ try {
     }
   } catch (e) {
     // A margin measurement that cannot run is not a reason to fail a turn.
-    say('margin check skipped: ' + (e && e.message ? e.message : e));
+    const msg = e && e.message ? e.message : String(e);
+    say(/Cannot find module/.test(msg)
+      ? 'margin check: not installed (the benchmark harness ships only in the author\'s tree) — skipped'
+      : 'margin check skipped: ' + msg);
   }
 } catch (e) {
   // A hook must never be the reason a turn fails.
