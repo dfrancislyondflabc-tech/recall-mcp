@@ -1,0 +1,45 @@
+{
+  "name": "recall-mcp",
+  "version": "1.1.0",
+  "type": "module",
+  "description": "Two-tier hybrid (BM25F + dense + phrase) retrieval MCP server over Claude persistent memory",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "node index.js",
+    "index": "node scripts/build-index.js",
+    "verify": "node scripts/verify-stdio.js",
+    "measure-keyword-scale": "node scripts/measure-keyword-scale.js",
+    "eval:state": "node scripts/eval-state.js",
+    "analyse-queries": "node scripts/analyse-query-log.js",
+    "commit-memories": "node scripts/commit-memories.js --verbose",
+    "memories-status": "node scripts/commit-memories.js --status",
+    "check:release": "node scripts/check-release-clean.mjs",
+    "test": "node scripts/verify-stdio.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0",
+    "@xenova/transformers": "^2.17.2"
+  },
+  "license": "MIT",
+  "author": "Daniel Francis-Lyon",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dfrancislyondflabc-tech/recall-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dfrancislyondflabc-tech/recall-mcp/issues"
+  },
+  "homepage": "https://github.com/dfrancislyondflabc-tech/recall-mcp#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "retrieval",
+    "bm25",
+    "embeddings",
+    "hybrid-search",
+    "claude"
+  ]
+}
