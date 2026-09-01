@@ -9,7 +9,9 @@
 
 import { z } from 'zod';
 import { readFileSync, statSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { memoryDir, memoryRoots, CORPORA, rootsForCorpus, indexPathForCorpus, markMcpRequest,
          libraryCorpora, allCorpora, libraryBaseDir, isValidCategoryName } from '../lib/config.js';
 import { loadCorpus, resolveDoc, setTier, parseFrontmatter } from '../lib/corpus.js';
@@ -20,6 +22,10 @@ import { verifyClaims, configuredRepos } from '../lib/git-join.js';
 import { readSource, converterReport, supportedExtensions } from '../lib/import-sources.js';
 import { deriveProfile } from '../lib/corpus-profile.js';
 import { forgetStatCache } from '../lib/freshness.js';
+
+// This file's repo root. Not process.cwd(): a server is spawned from wherever the client felt
+// like, and doCapture() shells to a sibling script by absolute path.
+const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 import { attachProbeVerdicts } from '../lib/probe-surface.js';
 import { keyFactsPathFor } from '../lib/key-facts.js';
 import { serverVersionString, SERVER_STARTED_AT } from '../lib/version.js';
@@ -779,6 +785,51 @@ function _wantedScopes(scope) {
   return [...new Set(out)];
 }
 
+function doCapture({ sinceMinutes }) {
+  // REMEMBER WHAT WE JUST DID, even though the connector was off while we did it.
+  // The transcript is on disk either way — an off connector means it was never INGESTED, not
+  // that it was lost — so this is always recoverable after the fact.
+  //
+  // It shells to scripts/auto-ingest.js rather than reimplementing anything: that is the one
+  // capture path, and a second one would drift from it. Two env overrides do the work —
+  // `always` bypasses the connector check (you are asking explicitly, so the switch is moot),
+  // and debounce 0 bypasses the "not again this soon" guard that exists for hook traffic.
+  const n = Number(sinceMinutes);
+  const win = Number.isFinite(n) && n > 0 ? String(n) : null;
+  const t0 = Date.now();
+  // BOTH STREAMS. Every script here logs to STDERR, because in an MCP server stdout belongs to
+  // the JSON-RPC protocol. Reading only stdout returned a confident ok:true with nothing in it —
+  // the report was going to the stream we were not listening on.
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/auto-ingest.js')], {
+    encoding: 'utf8', timeout: 15 * 60_000,
+    env: { ...process.env,
+      MEMORY_AUTO_INGEST: 'always',
+      MEMORY_INGEST_DEBOUNCE_SEC: '0',
+      ...(win ? { MEMORY_INGEST_SINCE_MINUTES: win } : {}) }
+  });
+  const out = `${r.stdout || ''}\n${r.stderr || ''}`.trim();
+  if (r.error || r.status !== 0) {
+    return guardValue({ ok: false, error: String(r.error?.message || `exit ${r.status}`),
+      detail: out.slice(-800),
+      note: 'Capture failed. The transcript is untouched on disk; nothing was lost, and you can retry.' });
+  }
+  const emitted = /emitted:\s*(\d+)/.exec(out);
+  const count = emitted ? Number(emitted[1]) : 0;
+  return guardValue({
+    ok: true,
+    window: win ? `last ${win} minutes` : 'the whole session',
+    exchangesCaptured: count,
+    ...(count === 0 ? { nothingNew: 'Nothing in that window that was not already captured. Widen sinceMinutes, or omit it for the whole session.' } : {}),
+    seconds: Math.round((Date.now() - t0) / 100) / 10,
+    note: 'Captured into the STAGING corpus (searchable as scope:"staging" or scope:"all"), at ' +
+          'archive tier so it never outranks a memory you wrote deliberately. Already-captured ' +
+          'exchanges are skipped, so running this twice is safe.',
+    detail: out.trim().split('\n').slice(-4).join(' | '),
+    serverVersion: serverVersionString(),
+    serverStartedAt: SERVER_STARTED_AT
+  });
+}
+
 function doIndex({ force, scope, wait }) {
   const wanted = _wantedScopes(scope);
   const job = _startIndexJob(wanted, force);
@@ -941,7 +992,7 @@ export function registerMemoryTools(server) {
     'memory',
     'Two-tier hybrid retrieval over Claude\'s persistent memory corpus. ' +
     'Actions: search (BM25 + dense-vector hybrid, hot-tier boosted, returns provenance + snippet), ' +
-    'latest, thread, verify, import, index_status, probe_status (read the nightly probe sweep sidecar, or run:true to sweep now — machine-checkable FRESH/STALE/UNKNOWN/UNPROVABLE verdicts on memories that carry a probe; advisory and dark, never an input to ranking), get (full body of one memory), neighbors ([[wikilink]] graph — outbound, backlinks, plus top-3 semantically nearest), ' +
+    'latest, thread, verify, import, capture (remember this session after the fact — use when the memory connector was OFF while the work happened and you have realised it mattered; sinceMinutes limits it to the last N minutes, and re-running is safe), index_status, probe_status (read the nightly probe sweep sidecar, or run:true to sweep now — machine-checkable FRESH/STALE/UNKNOWN/UNPROVABLE verdicts on memories that carry a probe; advisory and dark, never an input to ranking), get (full body of one memory), neighbors ([[wikilink]] graph — outbound, backlinks, plus top-3 semantically nearest), ' +
     'index (rebuild; incremental by mtime+hash), demote/promote (tier moves). ' +
 
     'USE `latest` FOR ANY STATE QUESTION — "did X finish", "what happened after Y", "where did we ' +
@@ -1035,7 +1086,7 @@ export function registerMemoryTools(server) {
     'matters, CHECK THE WORLD: git log, the filesystem, the running process. And a thread that merely ' +
     'STOPPED reads exactly like one still in progress — silence is not evidence of either.',
     {
-      action: z.enum(['search', 'latest', 'thread', 'verify', 'import', 'index_status', 'get', 'neighbors', 'index', 'demote', 'promote', 'probe_status'])
+      action: z.enum(['search', 'latest', 'thread', 'verify', 'import', 'capture', 'index_status', 'get', 'neighbors', 'index', 'demote', 'promote', 'probe_status'])
         .describe('Which operation to perform.'),
       query: z.string().optional().describe('search: the natural-language query.'),
       limit: z.number().int().min(1).max(50).optional().describe('search: max results (default 8).'),
@@ -1048,6 +1099,7 @@ export function registerMemoryTools(server) {
       domain: z.enum(['code','writing','business','research','planning','prose','mixed']).optional().describe('OPTIONAL, and worth passing when you know: what KIND of work these memories are about. Counting can only separate code from not-code — a novel, a business plan and a day-planner are statistically identical — so this is the only way to get writing/business/research/planning advice apart. Trusted when given; derived from the corpus when not.'),
       path: z.string().optional().describe('import: ABSOLUTE path to a file or folder of memories to bring in. Reads md/txt/rtf/doc/docx/odt/html/pdf/csv/json/zip; a ChatGPT export (conversations.json or its .zip) is recognised and its conversation tree walked in order.'),
       dry: z.boolean().optional().describe('import: report exactly what WOULD be imported and write nothing.'),
+      sinceMinutes: z.number().positive().optional().describe('capture: remember only the last N minutes of this session. Omit for the whole session. Use when the memory connector was OFF while the work happened and you have realised afterwards that it mattered — the transcript is on disk regardless, so nothing was lost. Captured exchanges go to the STAGING corpus at archive tier and never outrank a hand-written memory; re-running is safe because already-captured exchanges are skipped.'),
       category: z.string().optional().describe("import: which LIBRARY category to file this under (e.g. 'books', 'manuals', 'policy', 'legal' — any name; the directory memory-library/<category>/ is created if new). REQUIRED for anything big (>200KB of text) or book-shaped (PDF): without it such an import is refused rather than silently diluting the curated corpus. Category content is read-only reference material, indexed separately, and searched only when named or via scope:'everything'. Structure is recovered on the way in: PDF page breaks become '## p.N' anchors, docx/html headings become real markdown headings, plain-text CHAPTER lines are promoted — so the section splitter chapters the document and citations carry page anchors."),
       replace: z.boolean().optional().describe('import (with category): a re-import of the SAME name supersedes the old version — the old file moves to <category>/archive/ stamped metadata.supersededAt (out of the index, never deleted), and the new one takes its place. For re-issued policies/statutes. Without it, an existing name is skipped, as always.'),
       keyFacts: z.record(z.array(z.string())).optional().describe("import: OPTIONAL 1-3 short atomic facts per SECTION of the document being imported, keyed by section name ('<doc>#<section-slug>', or just the section slug for a single-document import). Written from the section's own text, they are indexed as a high-weight keys field so a section can be found by what it IS about rather than only by the words it happens to contain. They never become content: the body, the snippets and the returned text are unchanged. Stored in a sidecar <file>.keyfacts.json. Read only when MEMORY_KEY_FACTS is on."),
@@ -1083,6 +1135,7 @@ export function registerMemoryTools(server) {
                               scope: validateScope(args.scope, { single: true }) || 'staging' }); break;
           case 'verify':    result = await doVerify(args); break;
           case 'import':    result = doImport(args); break;
+          case 'capture':   result = doCapture(args); break;
           case 'get':       result = doGet(args); break;
           case 'neighbors': result = await doNeighbors(args); break;
           case 'index':     result = args.wait ? await doIndexBlocking(args) : doIndex(args); break;

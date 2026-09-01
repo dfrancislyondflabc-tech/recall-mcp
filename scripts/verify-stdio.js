@@ -239,6 +239,13 @@ try {
   const idx = await rpc('tools/call', { name: 'memory', arguments: { action: 'index' } });
   check('index responds and rebuilds', okShape(idx), JSON.stringify(payload(idx)).slice(0, 120));
 
+  // capture with a window so short nothing can match: exercises the whole path (spawn the hook,
+  // parse the transcript, report) without writing anything into anyone's corpus during a test.
+  const cap = await rpc('tools/call', { name: 'memory', arguments: { action: 'capture', sinceMinutes: 0.01 } });
+  const cr = payload(cap);
+  check('capture responds and reports a count, not null',
+    okShape(cap) && typeof cr.exchangesCaptured === 'number', JSON.stringify(cr).slice(0, 140));
+
   const stillAfter = await rpc('tools/call', { name: 'memory', arguments: { action: 'search', query: 'lamp rotation', limit: 1 } });
   check('search still works after a rebuild', (payload(stillAfter).results || []).length === 1,
     JSON.stringify(payload(stillAfter)).slice(0, 90));

@@ -55,14 +55,37 @@ All three are fixed; the numbers are in that file's v1.1 section.
    threshold — the distributions overlap across their whole middle — so the
    verdict is a conjunction of measured weaknesses plus a vocabulary test.
    the derivation and its margins are recorded in `test/absence-calibration-preregistration.md`.
-3. **The 616 KB changelog dominated.** It took a top-3 slot on 21 of 32 probes,
-   almost always with `keywordScore: 0` — an artefact of scoring a document by
-   the maximum over its chunks, of which it has 517 to the corpus median's 4.
-   The dense leg now shrinks toward a corpus-derived reference length, waived in
-   proportion to keyword evidence. Changelog top-3 appearances: **21 → 0**, and
-   it is de-prioritised, not hidden — *"email backup app changelog"* still
-   returns it at rank 1 with `keywordScore: 1.0`. The long-document measurement
-   shows the sweep.
+3. **One enormous document was winning everything.** A 616 KB changelog took a
+   top-3 slot on **21 of 32** test questions — questions about deployment, about
+   pricing, about a bug in a scraper. It had no business in most of them.
+
+   The cause is in how a document is scored. Documents are split into chunks,
+   and a document's score is the score of its *best* chunk. That changelog
+   splits into **517** chunks; the typical memory in the corpus splits into
+   **4**. So the long document gets 517 chances to have one paragraph that
+   happens to sit near your question, and the short one gets 4. Ask about
+   anything and something in 616 KB of release notes is vaguely on topic.
+
+   It's the same effect as a library where one book runs to 3,000 pages and
+   everything else is a five-page note. Ask any question and the huge book
+   contains *a* page that looks relevant — not because it is the best answer,
+   but because it had the most chances to match.
+
+   The giveaway was `keywordScore: 0` on almost every one of those 21 hits:
+   **none of the words in the question appeared in the document at all.** It
+   was winning purely on one chunk out of 517 landing near the question in
+   embedding space.
+
+   The fix is to shrink the semantic score of documents that are far longer
+   than that corpus's own normal length. "Normal" is measured per corpus rather
+   than hard-coded, since a corpus of books and a corpus of notes disagree about
+   what long means. And the shrink is *waived in proportion to keyword
+   evidence*: if your words really are in the document, the penalty lifts. Long
+   is only suspicious when the document didn't match what you actually asked.
+
+   Result: top-3 appearances **21 → 0**. It is de-prioritised, not hidden —
+   ask for that changelog by name and it still comes back at rank 1 with
+   `keywordScore: 1.0`, because now the words match.
 
 ### The keyword score is on an absolute scale
 
@@ -95,10 +118,61 @@ cd recall-mcp
 npm install
 ```
 
-**Then tell it where your memories are.** There is no sensible default for this, so it does not
-guess: it looks in `./memories` and finds nothing. Either set `MEMORY_DIR`, or copy
-`local-config.example.json` to `local-config.json` (gitignored, never indexed) and set `memoryDir`.
-A memory is a markdown file with a `name:` and a `description:` in its frontmatter — see
+**Then tell it where your memories are.** It does **not** search your disk for them — there is no
+sensible default, so it does not guess. `MEMORY_DIR` (or `memoryDir` in `local-config.json`, copied
+from `local-config.example.json`; gitignored, never indexed) is the whole of the discovery logic.
+
+**If you already use Claude Code's memory, you are done in one line.** Point it at that folder and
+it indexes those files *in place* — nothing is copied, nothing is converted, and Claude carries on
+writing them as it always did:
+
+```bash
+export MEMORY_DIR=~/.claude/projects/<project-slug>/memory
+```
+
+(The slug is your project's path with the separators replaced — `ls ~/.claude/projects` to find
+yours.) Reading Claude's own directory, rather than a copy of it, is the reason this server's
+corpus cannot silently drift out of date.
+
+**If your history lives somewhere else, import it once.** A ChatGPT export `.zip`, a folder of
+Obsidian/Notion markdown, or a single file:
+
+```bash
+node scripts/import-memories.js /absolute/path/to/export.zip --dry   # preview
+node scripts/import-memories.js /absolute/path/to/export.zip
+```
+
+This one *does* write files into `MEMORY_DIR`, converting as it goes. `memory({action: "import"})`
+is the same thing from inside a conversation.
+
+**Remembering the conversations themselves is controlled by the connector toggle**, and there is
+nothing else to configure. Install the capture hook once (`scripts/auto-ingest.js` on SessionEnd —
+see `dist/INSTALL-MAC.md`), and after that the switch you already use in Claude's UI is the switch:
+connector **on** means this server is running, which it advertises by leaving a dated mark on disk;
+the hook reads that mark and captures the session. Connector **off**, no mark, nothing captured,
+silently. Captured conversations land in a **separate** staging corpus at a lower tier, so they are
+searchable but never outrank a memory you wrote deliberately.
+
+Two overrides live in `local-config.json` — and it has to be that file rather than an environment
+variable, because hooks are spawned without your shell environment:
+
+```json
+{ "captureAlways": true }    // remember every session, connector on or off
+{ "autoIngest": false }      // remember nothing, ever
+```
+
+**And if you had it switched off and only realised afterwards that the work mattered**, nothing is
+lost — the transcript was on disk the whole time, it simply was not ingested. Ask for it after the
+fact:
+
+```
+memory({action: "capture", sinceMinutes: 60})   // remember the last hour
+memory({action: "capture"})                     // remember this whole session
+```
+
+Already-captured exchanges are skipped, so running it twice is safe.
+
+A memory is just a markdown file with a `name:` and a `description:` in its frontmatter — see
 *Layout* below. Then:
 
 ```bash
@@ -125,8 +199,8 @@ npm run analyse-queries         # what has been asked of it
 
 ## The tool
 
-One gateway tool, twelve actions: `search`, `get`, `neighbors`, `latest`, `thread`,
-`verify`, `index`, `index_status`, `probe_status`, `promote`, `demote`, `import`.
+One gateway tool, thirteen actions: `search`, `get`, `neighbors`, `latest`, `thread`,
+`verify`, `index`, `index_status`, `probe_status`, `promote`, `demote`, `import`, `capture`.
 The four you will use daily are documented in full below.
 
 ### `memory({action: "search", query, limit?, scope?})`

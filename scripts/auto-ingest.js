@@ -28,6 +28,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { ownStoreDir, stagingIndexPath, memoryRoots, rootsForCorpus } from '../lib/config.js';
+import { localConfig } from '../lib/local-config.js';
+import { connectorRecentlyOn } from '../lib/heartbeat.js';
 import { buildIndex } from '../lib/index-store.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -113,6 +115,33 @@ mkdirSync(store, { recursive: true });
 // free: a 100 MB transcript takes ~60s to walk. So a per-transcript stamp keeps
 // the common case to a stat() and an early exit.
 // Override with MEMORY_INGEST_DEBOUNCE_SEC; 0 disables.
+// WHICH SESSIONS GET REMEMBERED, and how you change your mind about it.
+//
+// DEFAULT: the ones you had the memory connector switched ON for. That toggle is already in
+// Claude's UI, everyone can find it, and it has a physical consequence this hook can observe —
+// an enabled connector means this server is running and leaving a dated mark. So the switch
+// people already use becomes the switch, with no hook JSON to edit and nothing invisible.
+//
+// Two overrides, both in local-config.json because a HOOK INHERITS NO ENVIRONMENT — that is
+// the whole reason lib/local-config.js exists, and an env-var-only switch would silently do
+// nothing here:
+//
+//   { "captureAlways": true }   remember every session, connector on or off
+//   { "autoIngest": false }     remember nothing, ever
+//
+// Env vars are honoured too, for a one-off manual run: MEMORY_AUTO_INGEST=0 | 1 | always.
+const AI_ENV = String(process.env.MEMORY_AUTO_INGEST ?? '').toLowerCase();
+if (AI_ENV === '0' || localConfig().autoIngest === false) process.exit(0);
+const CAPTURE_ALWAYS = AI_ENV === 'always' || AI_ENV === '1' || localConfig().captureAlways === true;
+if (!CAPTURE_ALWAYS) {
+  const hb = connectorRecentlyOn();
+  if (!hb.on) {
+    // Silent and exit 0: a session you had memory switched off for is not an error, and a hook
+    // that prints on every ordinary session end is a hook people delete.
+    process.exit(0);
+  }
+}
+
 const DEBOUNCE_SEC = Number(process.env.MEMORY_INGEST_DEBOUNCE_SEC ?? 600);
 const stampFile = join(store, '.last-ingest.json');
 const readStamps = () => { try { return JSON.parse(readFileSync(stampFile, 'utf8')); } catch { return {}; } };

@@ -12,6 +12,7 @@ import { log, error } from './lib/logger.js';
 import { registerMemoryTools } from './tools/memory.js';
 import { memoryDir, indexPath } from './lib/config.js';
 import { versionBanner, serverVersionString } from './lib/version.js';
+import { startHeartbeat } from './lib/heartbeat.js';
 
 // ---- Graceful signal handling ----
 // Prevents a Claude Desktop crash on disconnect or kill.
@@ -42,6 +43,10 @@ async function main() {
   // spawn, so a client that was launched this morning is still running this
   // morning's code; without this line that is invisible, and on 2026-08-19 it
   // cost a session an afternoon. stderr only: stdout is the JSON-RPC channel.
+  // THE CONNECTOR TOGGLE IS THE CAPTURE SWITCH. While this process lives, it leaves a dated
+  // mark that scripts/auto-ingest.js reads — so turning the connector off in Claude's UI stops
+  // capture, with nothing else to configure. See lib/heartbeat.js.
+  startHeartbeat();
   log(versionBanner());
   const transport = new StdioServerTransport();
   await server.connect(transport);

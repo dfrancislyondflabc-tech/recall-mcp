@@ -54,6 +54,17 @@ if (!file) { console.error('usage: ingest-transcript.js <transcript.jsonl> [--wr
 // carries no account field, so the honest label for a backfilled exchange is
 // NONE — and unlabelled memories are returned to every account anyway.
 const BACKFILL = process.argv.includes('--backfill');
+// RETROACTIVE CAPTURE. "Remember what we did in the last hour" — for the case where the
+// connector was off while the work happened and you only realised afterwards that it mattered.
+// The transcript was on disk the whole time; nothing was lost, it simply was not ingested.
+// Env as well as flag because the MCP `capture` action reaches this through auto-ingest.js.
+const SINCE_MIN = (() => {
+  const i = process.argv.indexOf('--since-minutes');
+  const raw = i !== -1 ? process.argv[i + 1] : process.env.MEMORY_INGEST_SINCE_MINUTES;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+})();
+const SINCE_MS = SINCE_MIN ? Date.now() - SINCE_MIN * 60_000 : null;
 const ACCOUNT = BACKFILL ? null : accountLabel();
 const MIN_REPLY_CHARS = 200;      // below this an exchange carries no retrievable fact
 const DESC_WORDS = 40;
@@ -231,6 +242,9 @@ const out = [];
 let n = 0;
 for (const ex of exchanges) {
   if (n >= LIMIT) break;
+  // Older than the requested window: skip. An exchange with no timestamp is KEPT, because
+  // dropping it would silently lose work whose only fault is a missing field.
+  if (SINCE_MS !== null && ex.ts && new Date(ex.ts).getTime() < SINCE_MS) continue;
   const seq = String(++n).padStart(4, '0');
   // Names are qualified by SESSION. lib/corpus.js warns on duplicate names
   // because get()/backlinks address by name and the loser is unreachable; an
