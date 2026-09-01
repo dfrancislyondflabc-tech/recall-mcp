@@ -924,9 +924,26 @@ async function doProbeStatus({ run }) {
         : 'No memory carries a probe or validUntil yet. Add `probe:` and `probe_expected:` to a memory\'s frontmatter; PROBE_PREDICATES in lib/probes.js is the closed vocabulary.'
     }, 'probe-status-output');
   }
-  return guardValue({ ran: false, lastSweep: last.at, level: last.level, count: last.count,
-    summary: last.summary, results: last.results,
-    note: 'Verdicts from the last sweep (sidecar). Advisory and dark; UNKNOWN is never STALE.' }, 'probe-status-output');
+  // THE SIDECAR IS PER-INSTALL, NOT PER-CORPUS. probeResultsPath() defaults to the repo root, so
+  // pointing MEMORY_DIR at a second corpus and asking for probe_status reported the FIRST
+  // corpus's verdicts — rows about memories that do not exist here. Observed: a 4-document
+  // fixture corpus reporting 11 verdicts belonging to another corpus entirely.
+  //
+  // The rows are kept only for memories this corpus actually has, and the number dropped is
+  // stated rather than quietly discarded, because "9 verdicts are about something else" is
+  // itself the useful fact when it happens.
+  const here = new Set(loadCorpus(memoryRoots()).docs.map((d) => d.name));
+  const rows = (last.results || []).filter((r) => here.has(r.name));
+  const dropped = (last.results || []).length - rows.length;
+  const summary = {};
+  for (const r of rows) summary[r.verdict] = (summary[r.verdict] || 0) + 1;
+  return guardValue({ ran: false, lastSweep: last.at, level: last.level, count: rows.length,
+    summary, results: rows,
+    ...(dropped ? { otherCorpusRows: dropped } : {}),
+    note: 'Verdicts from the last sweep (sidecar). Advisory and dark; UNKNOWN is never STALE.' +
+      (dropped ? ` ${dropped} row(s) in the sidecar are about memories NOT in this corpus and were ` +
+        'excluded — the sidecar is per-install, so a second corpus sharing this checkout shares it. ' +
+        'Set MEMORY_PROBE_RESULTS per corpus to keep them apart.' : '') }, 'probe-status-output');
 }
 
 function doTier({ name }, tier) {
