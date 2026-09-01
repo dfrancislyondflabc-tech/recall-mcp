@@ -1,6 +1,6 @@
 {
-  "sha": "c87cdba5f5e10bf2ef4c773e727b6fa82feca3cb",
-  "builtAt": "2026-09-01T10:49:12Z",
+  "sha": "755d7f1257b7d76ab20a557654ae00f0e60ce9ff",
+  "builtAt": "2026-09-01T10:58:39Z",
   "builtBy": "scripts/build-public-tree.sh",
   "_comment": "Read by lib/version.js ONLY when there is no .git. A clone reports its live HEAD instead."
 }
