@@ -157,9 +157,15 @@ Two overrides live in `local-config.json` — and it has to be that file rather 
 variable, because hooks are spawned without your shell environment:
 
 ```json
-{ "captureAlways": true }    // remember every session, connector on or off
-{ "autoIngest": false }      // remember nothing, ever
+{
+  "memoryDir": "/absolute/path/to/your/memories",
+  "captureAlways": true
+}
 ```
+
+`captureAlways: true` remembers **every** session, connector on or off. `autoIngest: false`
+remembers **none**, ever. Set one or neither — the default, with both absent, is "remember the
+sessions you had the connector on for".
 
 **And if you had it switched off and only realised afterwards that the work mattered**, nothing is
 lost — the transcript was on disk the whole time, it simply was not ingested. Ask for it after the
@@ -971,11 +977,18 @@ directory of files.
 `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
-"memory": {
-  "command": "node",
-  "args": ["/absolute/path/to/recall-mcp/index.js"]
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": ["/absolute/path/to/recall-mcp/index.js"]
+    }
+  }
 }
 ```
+
+If the file already has `mcpServers`, add just the `"memory"` block inside it rather than
+replacing what is there.
 
 **Claude Desktop caches MCP tool schemas at connection time.** After adding or
 editing the server you must **fully quit** Claude Desktop (⌘Q, not just close
