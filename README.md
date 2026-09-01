@@ -1034,6 +1034,30 @@ test/fixtures/projects/  a FIXTURE second project's memory folder (17 hand-writt
                          machine.
 ```
 
+## What it costs at size
+
+Measured on one laptop, so treat them as shape rather than benchmark. The fixed cost is the
+embedding model (~215 MB resident); everything above that scales with **chunks**, not documents.
+
+| corpus | chunks | index on disk | first build | search p50 | RSS |
+|---|---|---|---|---|---|
+| 12 notes | 12 | 0.2 MB | ~3 s | ~20 ms | 267 MB |
+| 600 notes | 2,440 | 28 MB | ~87 s | 32 ms | 321 MB |
+| 2,651 notes | 15,107 | — | — | 101 ms | 968 MB |
+
+Three things worth knowing before you point this at something large:
+
+- **Build time follows your biggest file, not your corpus.** 600 ordinary notes index in about
+  90 seconds; a single 4.6 MB document takes 163 seconds on its own. If a rebuild is slow, one
+  file is usually the reason, and the build now names it.
+- **Resident memory is dominated by vectors held as ordinary JavaScript arrays** — roughly 45 KB
+  per chunk against a 384-dimension vector that is ~3 KB of actual numbers. A `Float32Array`
+  representation would cut that severalfold and has not been done.
+- **Search stays fast**: 32 ms at 600 documents, ~101 ms at 2,651. It is the memory, not the
+  latency, that will bother you first.
+
+Nothing here is a hard limit; they are the numbers, so you can decide.
+
 ## Environment overrides
 
 | var | default |
