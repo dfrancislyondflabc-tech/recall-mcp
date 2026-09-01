@@ -1034,6 +1034,24 @@ test/fixtures/projects/  a FIXTURE second project's memory folder (17 hand-writt
                          machine.
 ```
 
+## What it writes down about you
+
+Local-only, and worth knowing before you point this at anything sensitive.
+
+**Every query is logged verbatim.** `.query-log.jsonl` in the server directory records, per
+search: the query text, the scope, the top result's name, the confidence, and whether it refused.
+It exists so the retrieval work can be measured against real questions rather than invented ones,
+and `npm run analyse-queries` reads it. It is **gitignored**, never leaves the machine, and no
+part of it is sent anywhere.
+
+Turn it off with `MEMORY_QUERY_LOG=0`, or point it elsewhere with a path. Nothing else changes if
+you do — it is diagnostics, not a dependency.
+
+The other files the server writes beside itself, all gitignored: the index (`.memory-index.json`
+and friends), the vector cache, the probe sidecar, and the curation state. All of them mirror
+corpus text, which is why none of them is ever committed and why `scripts/commit-memories.js`
+refuses to add a remote.
+
 ## What it costs at size
 
 Measured on one laptop, so treat them as shape rather than benchmark. The fixed cost is the
@@ -1080,6 +1098,7 @@ Nothing here is a hard limit; they are the numbers, so you can decide.
 | `MEMORY_SECRETS_CONFIG` | `./secrets-exclude.json` — point at a different denylist. Used by the self-test so it can supply its own rather than depend on yours |
 | `MEMORY_PROBE_RESULTS` | `./.probe-results.json` — the probe sidecar. It is **per install, not per corpus**, so set this per corpus if two corpora share one checkout |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a corpus stat pass is reused before it is taken again |
+| `MEMORY_QUERY_LOG` | `./.query-log.jsonl` — every query, verbatim, for measurement. `0` disables it |
 | `MEMORY_INLINE_REINDEX_MAX` | `8` files — past this, stamp stale instead of rebuilding |
 | `MEMORY_INLINE_REINDEX_COOLDOWN_MS` | `60000` after a failed inline rebuild |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a stat pass may be reused |
