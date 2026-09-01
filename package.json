@@ -10,7 +10,6 @@
     "index": "node scripts/build-index.js",
     "verify": "node scripts/verify-stdio.js",
     "measure-keyword-scale": "node scripts/measure-keyword-scale.js",
-    "eval:state": "node scripts/eval-state.js",
     "analyse-queries": "node scripts/analyse-query-log.js",
     "commit-memories": "node scripts/commit-memories.js --verbose",
     "memories-status": "node scripts/commit-memories.js --status",

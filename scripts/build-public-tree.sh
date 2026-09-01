@@ -72,6 +72,14 @@ EXCLUDE=(
   # hold benchmark questions written from the author's corpus, naming a real competitor.
   scripts/measure-graph-spread.js
   scripts/measure-graph-spread-v2.js
+  # Four more of the same class, found by RUNNING every npm script on a fresh install rather than
+  # by reading this list again. All four do an unguarded top-level readFileSync of a test/ fixture,
+  # so they throw ENOENT on a public clone. eval-state was the one that mattered: it is an npm
+  # script, so `npm run eval:state` died for anyone who tried it.
+  scripts/eval-state.js
+  scripts/measure-sku-alias.js
+  scripts/measure-library-recall.js
+  scripts/monitor-margins.js
 )
 for path in "${EXCLUDE[@]}"; do
   if [ -e "$DEST/$path" ]; then rm -rf "${DEST:?}/$path"; echo "    - $path"; fi
@@ -164,6 +172,14 @@ c._comment=(c._comment?c._comment+" ":"")+
 fs.writeFileSync(p, JSON.stringify(c,null,2)+"\n");
 console.log("    ~ secrets-exclude.json: emptied "+had+" per-machine entr(ies), kept "+(c.patterns||[]).length+" patterns");
 ' "$DEST/secrets-exclude.json"
+
+# ASK THE TREE, DO NOT RE-READ THE LIST. This class has now bitten twice, and both times the
+# exclusion list was inspected and both times the miss survived. scripts/audit-read-paths.mjs
+# resolves every literal path the shipped code reads against the staged tree.
+echo "== audit: does anything here read a file that did not ship?"
+if ! node "$ROOT/scripts/audit-read-paths.mjs" "$DEST"; then
+  echo; echo "REFUSED — staged tree deleted so it cannot be published."; rm -rf "${DEST:?}"; exit 4
+fi
 
 echo "== gate: does this tree name anyone?"
 if ! node "$ROOT/scripts/check-release-clean.mjs" "$DEST"; then
