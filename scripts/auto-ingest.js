@@ -99,22 +99,6 @@ function sessionIdFromStdin() {
   } catch (_) { return undefined; }
 }
 
-const transcript = resolveTranscript(process.argv[2] || sessionIdFromStdin());
-if (!transcript || !existsSync(transcript)) { log('no transcript; nothing to do'); process.exit(0); }
-
-const store = ownStoreDir();
-const stagingIdx = stagingIndexPath();
-if (!store || !stagingIdx) { log('staging disabled; nothing to do'); process.exit(0); }
-mkdirSync(store, { recursive: true });
-
-// ---- DEBOUNCE (BEFORE THE LOCK, DELIBERATELY) -------------------------------------------------------------
-// SessionEnd is not enough. It fires on exit/clear/logout/resume, and a chat
-// left open for DAYS never fires it — so the work in the session you actually
-// live in is the work that never gets captured. A Stop hook fires after every
-// assistant turn and closes that gap, but a turn-by-turn full re-parse is not
-// free: a 100 MB transcript takes ~60s to walk. So a per-transcript stamp keeps
-// the common case to a stat() and an early exit.
-// Override with MEMORY_INGEST_DEBOUNCE_SEC; 0 disables.
 // WHICH SESSIONS GET REMEMBERED, and how you change your mind about it.
 //
 // DEFAULT: the ones you had the memory connector switched ON for. That toggle is already in
@@ -142,6 +126,22 @@ if (!CAPTURE_ALWAYS) {
   }
 }
 
+const transcript = resolveTranscript(process.argv[2] || sessionIdFromStdin());
+if (!transcript || !existsSync(transcript)) { log('no transcript; nothing to do'); process.exit(0); }
+
+const store = ownStoreDir();
+const stagingIdx = stagingIndexPath();
+if (!store || !stagingIdx) { log('staging disabled; nothing to do'); process.exit(0); }
+mkdirSync(store, { recursive: true });
+
+// ---- DEBOUNCE (BEFORE THE LOCK, DELIBERATELY) -------------------------------------------------------------
+// SessionEnd is not enough. It fires on exit/clear/logout/resume, and a chat
+// left open for DAYS never fires it — so the work in the session you actually
+// live in is the work that never gets captured. A Stop hook fires after every
+// assistant turn and closes that gap, but a turn-by-turn full re-parse is not
+// free: a 100 MB transcript takes ~60s to walk. So a per-transcript stamp keeps
+// the common case to a stat() and an early exit.
+// Override with MEMORY_INGEST_DEBOUNCE_SEC; 0 disables.
 const DEBOUNCE_SEC = Number(process.env.MEMORY_INGEST_DEBOUNCE_SEC ?? 600);
 const stampFile = join(store, '.last-ingest.json');
 const readStamps = () => { try { return JSON.parse(readFileSync(stampFile, 'utf8')); } catch { return {}; } };
