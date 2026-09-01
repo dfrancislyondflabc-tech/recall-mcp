@@ -1038,6 +1038,11 @@ test/fixtures/projects/  a FIXTURE second project's memory folder (17 hand-writt
 | `MEMORY_FIRST_BUILD_MAX` | `40` files — a corpus with no index at all is built inline up to this size, and reported stale over it |
 | `MEMORY_MODEL_CACHE` | `./.model-cache` |
 | `MEMORY_INLINE_REINDEX` | `1` — `0` keeps the staleness check and the stamp, drops the inline rebuild |
+| `MEMORY_AUTO_INGEST` | *(unset)* — `0` never captures a session, `always`/`1` always does. Unset means "capture the sessions the connector was on for". **A hook inherits no environment**, so for a permanent setting use `local-config.json` (`autoIngest` / `captureAlways`); this var is for a one-off manual run |
+| `MEMORY_INGEST_SINCE_MINUTES` | *(unset)* — limit a capture to the last N minutes. Set for you by `memory({action:"capture", sinceMinutes})` |
+| `MEMORY_SECRETS_CONFIG` | `./secrets-exclude.json` — point at a different denylist. Used by the self-test so it can supply its own rather than depend on yours |
+| `MEMORY_PROBE_RESULTS` | `./.probe-results.json` — the probe sidecar. It is **per install, not per corpus**, so set this per corpus if two corpora share one checkout |
+| `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a corpus stat pass is reused before it is taken again |
 | `MEMORY_INLINE_REINDEX_MAX` | `8` files — past this, stamp stale instead of rebuilding |
 | `MEMORY_INLINE_REINDEX_COOLDOWN_MS` | `60000` after a failed inline rebuild |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a stat pass may be reused |
