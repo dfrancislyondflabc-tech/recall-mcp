@@ -15,7 +15,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { memoryDir, memoryRoots, CORPORA, rootsForCorpus, indexPathForCorpus, markMcpRequest,
          libraryCorpora, allCorpora, libraryBaseDir, isValidCategoryName } from '../lib/config.js';
 import { loadCorpus, resolveDoc, setTier, parseFrontmatter } from '../lib/corpus.js';
-import { isDenylistedFile, isSecretFrontmatter, scrubSections, guardValue, guard } from '../lib/secrets.js';
+import { isDenylistedFile, isSecretFrontmatter, scrubSections, guardValue, guard, redact } from '../lib/secrets.js';
 import { buildIndex } from '../lib/index-store.js';
 import { getIndex, invalidate, search, latest, thread, nearest } from '../lib/search.js';
 import { verifyClaims, configuredRepos } from '../lib/git-join.js';
@@ -285,10 +285,23 @@ function _sectionOf(body, wanted) {
 //     permanent in a way its author rarely intends
 //   * skips nothing silently: every skipped or refused item is counted and named
 //   * dry:true reports identically and writes nothing
+// TWO PLACES WERE DETECTING THE SAME THING DIFFERENTLY, and the narrower one was the gate.
+// This list had four patterns; secrets-exclude.json has sixteen, and the difference showed:
+// `password: Tr0ub4dor&3` was imported verbatim because this list required the value to be
+// QUOTED, while the runtime guard caught the identical string at index time. An `sk-live-...`
+// key went the same way — nothing here matches a provider key prefix except AWS.
+//
+// Detection is now delegated to the CONFIGURED vocabulary, so widening the policy widens both
+// the guard and this gate at once and they cannot drift apart again. These three literals stay
+// as a floor: they are shapes worth refusing even if someone edits the config down.
 const IMPORT_SECRET_RES = [
-  /sshpass\s+-p\s+'[^']+'/, /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAKIA[0-9A-Z]{16}\b/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bAKIA[0-9A-Z]{16}\b/,
   /\b(api[_-]?key|password|secret|token)\s*[:=]\s*['"][^'"]{12,}['"]/i
 ];
+/** Credential-shaped by the same rules the output guard uses. Exported so the suite can
+ *  assert THIS predicate rather than a reimplementation of it. */
+export const importCarriesCredential = (text) =>
+  IMPORT_SECRET_RES.some((re) => re.test(text)) || redact(text).text !== text;
 const importSlug = (x, n = 48) => String(x || 'untitled').toLowerCase()
   .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, n) || 'untitled';
 
@@ -398,7 +411,7 @@ function doImport(args) {
   for (const it of items) {
     const text = String(it.body || '').trim();
     if (text.length < 40) { tooShort.push(it.title); continue; }
-    if (IMPORT_SECRET_RES.some((re) => re.test(text))) { refused.push(it.title); continue; }
+    if (importCarriesCredential(text)) { refused.push(it.title); continue; }
     n++;
     // Library naming: ONE file per book/manual, named by its own slug — the
     // section splitter does the chaptering, so a stable, human name is worth
