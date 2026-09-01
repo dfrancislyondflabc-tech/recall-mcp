@@ -872,9 +872,17 @@ then `git show <sha>:some-memory.md`.
 **Local only, deliberately.** A memory corpus tends to accumulate credentials — an SSH password
 pasted into a note, a token in a runbook. On disk that is a pre-existing fact you can fix; in a
 *pushed* history it is permanent and off-machine, surviving any later deletion unless the history
-is rewritten. The script therefore never adds a remote, and **refuses to run** if one is configured
-while credential-shaped content is still present, naming the offending files so you can deal with
-them. Offsite backup is a separate decision that needs those credentials moved out first.
+is rewritten. The script therefore never adds a remote, never pushes, and **refuses to run** if a
+remote is configured while an *unmistakable* secret is still present, naming the offending files.
+
+"Unmistakable" is deliberately narrower than the redaction vocabulary, because this decision blocks
+you from versioning your own notes and a false positive there is expensive. Three shapes block a
+commit: `sshpass -p '…'`, a `-----BEGIN … PRIVATE KEY-----` block, and an AWS `AKIA…` key. A line
+like `password: hunter2` is redacted everywhere it could be *served* — the index, search results,
+`get` — but does not block a local commit. The asymmetry with `import`, which refuses such a file,
+is intentional: declining to copy a file in is cheap and tells you which one, whereas declining to
+record your own history is not. Offsite backup is a separate decision that needs the credentials
+moved out first.
 
 ## Secrets policy
 
