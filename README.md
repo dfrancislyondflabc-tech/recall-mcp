@@ -367,8 +367,9 @@ not cover, so a long thread stays reachable in one more hop.
 
 **Check a claim against git instead of judging its wording.** The corpus records what was *said*;
 whether it *happened* is a question about the world, and for engineering claims the world keeps a
-record. A cited SHA either exists, landed on the mainline, on a date, touching files, or it does
-not.
+record. A cited **SHA** — the unique fingerprint git gives every commit, `47f71d3` and the like,
+naming one specific saved change — either exists, landed on the mainline, on a date, touching
+files, or it does not.
 
 ```
 memory({action: "verify", name: "x-df6d25fe-0028"})
@@ -391,10 +392,10 @@ memory({action: "verify", name: "x-df6d25fe-0028"})
 
 ### The reverse join — git → corpus, on time
 
-Every check above reads a SHA *out of* an exchange, which only works when the conversation wrote
-one down. Measured on a known day it usually doesn't: **of 12 commits made during one session, that
-session's text named 2.** The work happens in tool calls; ingest captures prose. Reading the corpus
-harder cannot recover what was never written.
+Every check above reads a commit SHA *out of* an exchange. That only works when the conversation wrote one down, and measured on a known day it usually
+doesn't: **of 12 commits made during one session, that session's text named 2.** The commits happen
+inside tool calls, while capture records the prose around them — so the identifier normally never
+appears in the text at all. Reading the corpus harder cannot recover what was never written.
 
 Time can. A conversation has timestamps and so do commits, so the join needs no SHA, no vocabulary
 and no judgment:
