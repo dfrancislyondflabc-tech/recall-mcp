@@ -10,6 +10,32 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.3.0] — 2026-09-02
+
+### Added
+
+- **`latest` no longer promises recency it cannot deliver.** When files the index has not read are
+  newer than the newest row it can rank, the response now says so, names those files, and stops
+  claiming `results[0]` is the last word. The observed failure: the answer sat in a file written at
+  17:02, the index was built at 00:24, and the response reported 25 unread files *and still* returned
+  the previous day's document as the last word. Additive — every other field, including the git
+  verification layer, is unchanged.
+
+- **The indexer reports documents that vanished.** When a document present in the last index is gone
+  from the corpus, it is named. Report only; the refusal guards added in 1.2.0 handle the
+  catastrophic cases. `MEMORY_VANISH_REPORT=0` disables it.
+
+- **Memories record the instruction they were written under** (`originTask`, plus `originSessionId`).
+  A rule given to one session was being read by later sessions as a universal standing rule. A
+  `feedback` memory that carries the field now says, on read, that a rule is not automatically
+  universal. Captured from the last user instruction at write time, redacted and truncated; memories
+  written earlier simply have no value, and absence is left as absence rather than guessed.
+
+### Changed
+
+- The bundled `commit-memories` hook stamps every missing metadata field rather than stopping at the
+  first one present, so a memory written before a field existed can gain it later.
+
 ## [1.2.1] — 2026-09-02
 
 ### Removed
@@ -100,6 +126,7 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.3.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.0
 [1.2.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.1
 [1.2.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.0
 [1.1.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.1.0

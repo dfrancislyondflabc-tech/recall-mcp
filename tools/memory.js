@@ -630,6 +630,16 @@ const raw = readFileSync(doc.path, 'utf8');
     project: doc.project || null,
     sessionId: doc.sessionId || null,
     sessionTitle: doc.sessionTitle || null,
+    // The instruction in force when this was written. For a `feedback` memory — a RULE — this
+    // is the difference between "Daniel's standing policy" and "what Daniel told one session
+    // while it was doing something else". Absent on memories written before it was captured,
+    // and absence is left as absence rather than guessed.
+    originTask: doc.originTask || null,
+    ...(doc.originTask && doc.type === 'feedback'
+      ? { originTaskNote: 'This rule was given while the session was working on: ' +
+          `"${doc.originTask}". A rule is not automatically universal — check whether that ` +
+          'context resembles yours before applying it, and prefer a live instruction over this.' }
+      : {}),
     readOnly: !!doc.readOnly,
     tier: doc.tier,
     inMemoryIndex: doc.inMemoryIndex,
