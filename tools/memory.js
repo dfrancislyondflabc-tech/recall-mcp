@@ -125,6 +125,34 @@ async function doSearch({ query, limit, scope, sessionId, after, before, near, a
     maxChars: maxChars ?? undefined,
     after: after ?? null, before: before ?? null, near: near ?? null
   });
+
+  // 🟥 metadata.secret RE-CHECKED AT OUTPUT TIME, THE SAME WAY `get` DOES IT.
+  //
+  // Marking a memory secret excludes it from the corpus at LOAD time — but search answers from
+  // the INDEX, so until the next rebuild the flag did nothing here. Measured: mark a memory
+  // secret, do not reindex, and `get` refuses it immediately while `search` still returns its
+  // name, its description AND a body snippet. Someone marking a memory secret is doing so
+  // *because* it should stop coming back, and "it will, after the next index build" is not the
+  // guarantee they think they are getting.
+  //
+  // Only the rows actually being returned are re-read — a handful of small files, not the corpus.
+  // A row whose file has vanished is left alone: that is staleness, which the freshness layer
+  // already reports, and dropping it here would hide a different problem.
+  const secretDropped = [];
+  const notSecret = (row) => {
+    if (!row?.path) return true;
+    try {
+      const { front } = parseFrontmatter(readFileSync(row.path, 'utf8'));
+      if (isSecretFrontmatter(front)) { secretDropped.push(row.name); return false; }
+    } catch { /* unreadable or gone — staleness, not a secret */ }
+    return true;
+  };
+  if (Array.isArray(res.results)) res.results = res.results.filter(notSecret);
+  if (Array.isArray(res.bestWeak)) res.bestWeak = res.bestWeak.filter(notSecret);
+  if (secretDropped.length) {
+    res.secretWithheld = `${secretDropped.length} result(s) were withheld: their frontmatter says ` +
+      'metadata.secret. They are still in the index — rebuild to remove them from it.';
+  }
   // PHASE 3b — the verdicts come out of the dark. The calibration scored
   // 18/20 with zero false-STALEs, which is the branch that says surface them.
   // Deliberately AFTER search() has returned: ranking is finished and gone,

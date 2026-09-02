@@ -10,6 +10,40 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.4.1] — 2026-09-02
+
+Four more defects, all found by an agent given only this repository and told to break it.
+
+### Security
+
+- **`import` no longer reads files off your machine.** `unzip` restores stored symlinks, and the
+  import walker followed them — so a zip containing `notes.md -> /etc/hosts` imported the host's
+  `/etc/hosts` as a searchable memory, and one pointing at `~/.ssh/config` or `~/.aws/credentials`
+  would import those. The recorded provenance named the temp extraction directory, so nothing in
+  the corpus showed the content came from outside the archive. Folder imports had the same hole.
+  Both now refuse a symlink that resolves outside the source, and **say which files were refused**.
+  Contents *inside* the archive are unaffected.
+
+- **`metadata: secret: true` now binds immediately in `search`.** Marking a memory secret excluded
+  it from the corpus at load time, but search answers from the index — so until the next rebuild
+  the flag did nothing there: `get` refused the memory while `search` still returned its name, its
+  description and a body snippet. The check now runs at output time, on the returned rows only, and
+  the response says when something was withheld.
+
+### Fixed
+
+- **One unreadable file no longer takes the whole memory offline.** A `chmod 000` file — or a file
+  deleted between listing and reading, on a folder the design expects you to edit while the server
+  runs — threw out of the corpus load. Every query then answered "no index — run `npm run index`",
+  advice that could not help because the rebuild threw the same error, and asking for a healthy
+  memory returned an error naming a *different* file. Bad files are now skipped and named with
+  their reason, and the rest of the corpus keeps serving.
+
+- **A wrong-length vector in an index is refused instead of silently hiding documents.** The
+  base64 path validated the dimension; the plain-array path did not. A short array made `cosine`
+  return `NaN`, and `NaN` loses every comparison — so affected documents did not rank low, they
+  **disappeared** from results while the response still said `confidence: "high"`.
+
 ## [1.4.0] — 2026-09-02
 
 A security audit — 37 probes across path traversal, injection, SSRF, secret handling and resource
@@ -202,6 +236,7 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.4.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.1
 [1.4.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.0
 [1.3.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.1
 [1.3.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.0

@@ -1,6 +1,6 @@
 {
   "name": "recall-mcp",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "type": "module",
   "description": "Two-tier hybrid (BM25F + dense + phrase) retrieval MCP server over Claude persistent memory",
   "main": "index.js",
