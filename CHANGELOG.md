@@ -10,6 +10,24 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.2.1] — 2026-09-02
+
+### Removed
+
+- **The "ordinary words" shadow instrumentation is no longer distributed.** 1.2.0 shipped
+  `lib/ordinary-shadow.js` and documented two environment variables for it. That was a mistake on
+  my part: it is an unproven measurement running under a pre-registration whose own reading rule
+  says it earns a *proposal*, not a behaviour — so it belongs in the tree where it is being
+  measured, not in everyone's install. It never changed an answer, and removing it changes none
+  either.
+
+### Changed
+
+- **Telemetry can no longer break search.** `lib/search.js` now loads its instrumentation lazily
+  and optionally: if the module is missing or fails to load, searching continues with a no-op and
+  says nothing about it. This is what makes the removal above possible, and it is the right shape
+  regardless — a measurement module should never be a hard dependency of the thing it measures.
+
 ## [1.2.0] — 2026-09-02
 
 ### Changed
@@ -57,11 +75,6 @@ be checkable.
 - **`MEMORY_VEC_ENCODING`** — `base64` (default) or `array` to write the pre-1.2 shape, for handing
   an index to an older build.
 
-- **A measurement-only signal for spurious refusals** (`MEMORY_ORDINARY_SHADOW`, default on;
-  `MEMORY_ORDINARY_SHADOW_LOG` to relocate). When a refusal's missing words are all ordinary English,
-  one line is appended to a log. **It changes no answer** — it is computed after the verdict, and
-  there is no code path from the log back into a result. Set to `0` to disable.
-
 ### Fixed
 
 - A document that links to itself no longer appears in its own `links`. Backlinks already excluded
@@ -87,5 +100,6 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.2.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.1
 [1.2.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.0
 [1.1.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.1.0

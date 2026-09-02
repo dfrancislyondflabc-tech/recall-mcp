@@ -88,6 +88,11 @@ EXCLUDE=(
   # written against the author's corpus and names an internal tool. scripts/measure-index-memory.js
   # is deliberately NOT excluded — it takes an index path and asserts nothing about content.
   scripts/measure-vector-fidelity.js
+  # UNPROVEN INSTRUMENTATION DOES NOT SHIP. The ordinary-word probe is a measurement running
+  # against the author's corpus under a pre-registration; its own reading rule says it earns a
+  # PROPOSAL, not a behaviour. lib/search.js imports it lazily and optionally for exactly this
+  # reason, and searching is unaffected by its absence (asserted in the suite).
+  lib/ordinary-shadow.js
 )
 for path in "${EXCLUDE[@]}"; do
   if [ -e "$DEST/$path" ]; then rm -rf "${DEST:?}/$path"; echo "    - $path"; fi

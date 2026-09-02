@@ -1109,8 +1109,6 @@ Nothing here is a hard limit; they are the numbers, so you can decide.
 | `MEMORY_PROBE_RESULTS` | `./.probe-results.json` — the probe sidecar. It is **per install, not per corpus**, so set this per corpus if two corpora share one checkout |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a corpus stat pass is reused before it is taken again |
 | `MEMORY_QUERY_LOG` | `./.query-log.jsonl` — every query, verbatim, for measurement. `0` disables it |
-| `MEMORY_ORDINARY_SHADOW` | `1` — a measurement that changes nothing. When a refusal's missing words are all ordinary English, one line is logged. `0` disables it |
-| `MEMORY_ORDINARY_SHADOW_LOG` | `./.shadow/ordinary-word-shadow.jsonl` — where those lines go |
 | `MEMORY_VEC_ENCODING` | `base64` — how vectors are written to the index. `array` writes the pre-2026-09 shape, for handing an index to an older build |
 | `MEMORY_INLINE_REINDEX_MAX` | `8` files — past this, stamp stale instead of rebuilding |
 | `MEMORY_INLINE_REINDEX_COOLDOWN_MS` | `60000` after a failed inline rebuild |
