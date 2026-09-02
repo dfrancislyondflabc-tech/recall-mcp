@@ -10,6 +10,42 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.4.0] — 2026-09-02
+
+A security audit — 37 probes across path traversal, injection, SSRF, secret handling and resource
+limits. Twenty categories were clean. Three were not.
+
+### Security
+
+- **A symlink inside your corpus can no longer read outside it.** Planting `passwd.md ->
+  /etc/passwd` in the corpus directory got `/etc/passwd` indexed, searchable, and returned in full.
+  The effective boundary was not your corpus directory but *everything reachable from it* — and the
+  contents end up in an index on disk and in a model's context. Paths are now resolved with
+  `realpath` and anything landing outside the root is refused. **A symlink that stays inside your
+  corpus still works**, since that is a legitimate way to organise notes.
+
+- **AWS access keys and private keys are now redacted.** The pattern for prefixed API keys required
+  a `-` or `_` after the prefix — correct for `sk-…` and `ghp_…`, wrong for AWS, whose key ids are
+  `AKIA` followed immediately by 16 characters. So an AWS key pasted into a memory was indexed in
+  plaintext, written to the index file, and returned to the caller. Same for
+  `-----BEGIN … PRIVATE KEY-----`. Both were already caught by the bundled commit hook, so the two
+  lists had drifted apart. Deliberately narrow: IAM *identifiers* (`AIDA…`, `AROA…`), public keys
+  and certificates are **not** redacted, because over-redaction corrupts documentation.
+
+- **The tool now states that what it returns is content, not instruction.** A memory whose body
+  reads "ignore all previous instructions…" is returned verbatim — refusing to show a memory for
+  containing imperative text would be worse — but nothing said it was retrieved data. This corpus
+  is written by an assistant and read by an assistant, so text that lands in it comes back later
+  carrying authority it never earned.
+
+### Clean, and worth stating
+
+Path traversal via `get` (7 shapes), scope and library-category path injection (5), `section:`
+traversal and out-of-range offsets, names containing NUL or newlines, the write side, SSRF from
+URLs in corpus text, and shell metacharacters in corpus content reaching the git join — **all
+refused already**. No token or handshake was added: this server has no network listener at all
+(stdio only), so a token would guard a door that does not exist.
+
 ## [1.3.1] — 2026-09-02
 
 Everything here was found by two reviewers who knew nothing about this project — one told to break
@@ -166,6 +202,7 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.4.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.0
 [1.3.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.1
 [1.3.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.0
 [1.2.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.1
