@@ -10,6 +10,16 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.4.2] — 2026-09-02
+
+### Security
+
+- **A third import door is closed.** A zip whose `conversations.json` is a *symlink* was read
+  before the guarded file walker ever ran, so it imported that file's contents as conversations —
+  title and all — from anywhere on the machine. 1.4.1 fixed the walker; this fixes the door that
+  bypasses it. The boundary check is now **one shared helper** used by every path, because a rule
+  enforced in two places is a coincidence and this was the third place it was needed.
+
 ## [1.4.1] — 2026-09-02
 
 Four more defects, all found by an agent given only this repository and told to break it.
@@ -236,6 +246,7 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.4.2]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.2
 [1.4.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.1
 [1.4.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.0
 [1.3.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.1
