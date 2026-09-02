@@ -10,6 +10,42 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.3.1] — 2026-09-02
+
+Everything here was found by two reviewers who knew nothing about this project — one told to break
+it, one told to follow the README as a newcomer. Both found things the author could not see.
+
+### Fixed
+
+- **`latest` no longer returns nothing on a fresh install.** It defaults to the `staging` corpus,
+  which is populated by the capture hook — so a new user who did exactly what the README says
+  (point `MEMORY_DIR` at a folder of notes) got `results: []` plus advice to run an index command
+  that could not help them. It now falls back to `curated` when staging is absent or empty, and
+  **says so** in a `scopeFallback` field rather than switching silently. An explicit scope is
+  always obeyed, including an explicitly empty one.
+
+- **`latest` no longer reports substring matches as if they were mentions.** The substring filter
+  is deliberate — it is what lets a commit SHA or `v111` find the document that cites it. Reporting
+  the count without saying so was not: asked about a Rust rewrite that never happened, it returned
+  `totalMentions: 509` with results dated today, one carrying a git-verified commit, under
+  *"results[0] is the last thing said about this"* — and every match was the word **trust**. The
+  response now carries `termFrequenciesWholeWord` beside `termFrequencies` and leads with a warning
+  when a term matches in no document as a separate word. Filtering and ordering are unchanged.
+
+### Documentation
+
+Corrected in the README and CONTRIBUTING: broken backticks and a link to a section that does not
+exist; corpus statistics that read as properties of *your* corpus; **an example memory file, which
+1,174 lines never showed**; "twelve actions" vs thirteen; a duplicated environment row; two
+commands that do not exist in the distribution; the claim that a demote/promote round trip is
+"byte-for-byte reversible" (it is not, for a file that had no frontmatter); and twelve `test/…`
+paths that read as instructions to open files this distribution deliberately excludes.
+
+Also newly documented: **the absence verdict is less reliable on a small corpus**, which is the
+day-one condition. Measured at 5 of 20 answerable questions refused on a 122-file corpus, and 3 of
+4 on a 13-file one. It fails safe — the right document is in `bestWeak` — but on a young corpus
+read `bestWeak` before believing a refusal.
+
 ## [1.3.0] — 2026-09-02
 
 ### Added
@@ -61,9 +97,13 @@ be checkable.
 - **Index files are about a third the size, and load roughly three times faster.** Embedding
   vectors are now stored as base64-encoded float32 rather than as JSON number arrays
   (`INDEX_FORMAT_VERSION` 1 → 2). Measured on a 2,676-document corpus: index file
-  **158.8 MB → 55.7 MB**, first query after start **1291 ms → 412 ms**, peak memory while loading
-  **877 MB → 435 MB**. A server that has answered a query against that corpus settles at
+  **158.8 MB → 55.7 MB**, time to **parse the index** **1291 ms → 412 ms**, peak memory while
+  loading **877 MB → 435 MB**. A server that has answered a query against that corpus settles at
   **759 MB instead of 1307 MB**.
+
+  *(Corrected after 1.3.0: this line first said "first query after start", which is not what was
+  measured — a first query also pays model load, about 250–350 ms, which this change does not
+  touch. The parse figure is the honest one.)*
 
   **Your existing index keeps working and is not re-embedded.** The reader accepts both formats, so
   a version-1 index loads unchanged; it is rewritten in the new format the next time you rebuild.
@@ -126,6 +166,7 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.3.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.1
 [1.3.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.3.0
 [1.2.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.1
 [1.2.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.2.0

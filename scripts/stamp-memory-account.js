@@ -70,7 +70,12 @@ function originTask() {
     const path = HOOK?.transcript_path;
     if (!path) return null;
     const size = statSync(path).size;
-    const want = Math.min(size, 256 * 1024);
+    // 🟥 1 MB, NOT 256 KB, AND THE REASON IS MEASURED. A busy turn fills the transcript with tool
+    // traffic: on a real 15.7 MB transcript the last 256 KB contained NO human message at all —
+    // every `type:"user"` line in it was a tool_result. The first version of this function
+    // therefore returned null in production while passing its own synthetic test, which is
+    // exactly the failure a synthetic test cannot show you.
+    const want = Math.min(size, 1024 * 1024);
     const fd = openSync(path, 'r');
     let raw;
     try {
@@ -79,6 +84,24 @@ function originTask() {
       raw = buf.toString('utf8');
     } finally { closeSync(fd); }
     const lines = raw.split('\n');
+    const trim = (t) => {
+      const clean = redact(String(t)).text.replace(/\s+/g, ' ').trim();
+      if (!clean) return null;
+      return clean.length > 180 ? clean.slice(0, 177) + '…' : clean;
+    };
+    // PREFERRED: the transcript records the last prompt explicitly. Cheaper and more exact than
+    // inferring it, and immune to however message content is shaped in a given client version.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let j;
+      try { j = JSON.parse(lines[i]); } catch { continue; }
+      if (j?.type === 'last-prompt' && j.lastPrompt) {
+        const t = trim(j.lastPrompt);
+        if (t) return t;
+      }
+    }
+    // FALLBACK: the newest human message that is actually text. A `type:"user"` line is usually a
+    // TOOL RESULT — content is an array of {type:'tool_result'} — so filtering to type:'text' is
+    // what separates a person from the machinery.
     for (let i = lines.length - 1; i >= 0; i--) {
       let j;
       try { j = JSON.parse(lines[i]); } catch { continue; }
@@ -87,10 +110,10 @@ function originTask() {
       const text = typeof c === 'string' ? c
         : Array.isArray(c) ? c.filter((x) => x?.type === 'text').map((x) => x.text).join(' ') : '';
       const t = String(text || '').trim();
-      // Skip tool results and injected reminders — they are not what anyone asked for.
+      // Injected reminders are not what anyone asked for.
       if (!t || t.startsWith('<') || t.startsWith('[')) continue;
-      const clean = redact(t).text.replace(/\s+/g, ' ').trim();
-      return clean.length > 180 ? clean.slice(0, 177) + '…' : clean;
+      const out = trim(t);
+      if (out) return out;
     }
   } catch (_) { /* a label is never worth failing a write for */ }
   return null;

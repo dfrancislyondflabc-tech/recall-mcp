@@ -6,9 +6,14 @@
 
 This project's retrieval behaviour is calibrated, not guessed. Several constants — the absence
 floors, the long-document correction, the phrase guard — came from labelled measurements, and the
-record of each, *including the attempts that were rejected and the number that killed them*, is in
-`test/absence-calibration-preregistration.md`. Read it before changing anything in `lib/search.js`
-or `lib/absence-floors.js`. It will save you from re-running experiments that have already failed.
+record of each, *including the attempts that were rejected and the number that killed them*, is
+written down.
+
+> **A note on `test/…` paths in this file and in the README.** They are **citations to the
+> author's tree, not files in this distribution.** The suite and its fixtures are not shipped —
+> they assert against one particular private corpus (see *Running things*). They are named so a
+> claim can be traced to where it was measured, and so you can ask for one; they are not
+> instructions to open a file. Sorry for the tease.
 
 If you change retrieval, bring numbers. A pull request that says "this feels better" cannot be
 evaluated. A pull request that says "on these 40 labelled questions, false refusals went 8 → 6 and
@@ -31,7 +36,6 @@ If you are testing whether the system correctly says "I don't know", your questi
 ```bash
 npm install
 npm test                      # self-contained stdio smoke test; needs no memories
-npm run test:absence-gate     # builds its own corpora, proves a retrieval claim end to end
 ```
 
 The full suite is not public. It asserts against one particular corpus — it would fail for you,

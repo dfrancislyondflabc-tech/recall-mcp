@@ -3,8 +3,13 @@
 Two-tier hybrid retrieval over Claude's persistent memory corpus, exposed to
 Claude Desktop and Claude Code as a single MCP tool: **`memory`**.
 
-The curated corpus is ``$MEMORY_DIR` (see Configuration)`
-— 121 `.md` files, ~2.7 MB. `MEMORY.md` is the hand-curated tier-1 index.
+The curated corpus is the folder you point `MEMORY_DIR` at (see **Environment overrides**).
+`MEMORY.md`, if you have one, is treated as a hand-curated tier-1 index.
+
+Figures quoted throughout this README — "121 `.md` files, ~2.7 MB", timings, hit rates — are
+measurements of **the author's own corpus**, not properties of yours. They are here because a
+claim with a number behind it can be checked; treat them as the conditions a result was obtained
+under, not as promises about your data.
 Three more work corpora sit beside it, each with its **own** index and its own
 statistics: **other projects'** memory folders (`projects`), auto-ingested
 conversation exchanges (`staging`) and the institutional handoff documents
@@ -54,7 +59,17 @@ All three are fixed; the numbers are in that file's v1.1 section.
    absent probes with **0/28** false absences. There is no clean score
    threshold — the distributions overlap across their whole middle — so the
    verdict is a conjunction of measured weaknesses plus a vocabulary test.
-   the derivation and its margins are recorded in `test/absence-calibration-preregistration.md`.
+   the derivation and its margins are recorded in the author's `test/` tree.
+
+   > 🟥 **The absence verdict gets less reliable as your corpus gets smaller, and a new corpus is
+   > small.** `orphanShare` asks what fraction of your question's distinctive words appear nowhere
+   > in the corpus — so on a thin vocabulary, ordinary synonyms are genuinely absent and a question
+   > the corpus CAN answer gets refused. Measured here on 122 files: 5 of 20 answerable questions
+   > called absent. Measured by an independent reviewer on **13** files: **3 of 4**. It fails safe —
+   > the right document is in `bestWeak`, not invented — but on a young corpus read `bestWeak`
+   > before believing a refusal, and expect this to improve as you write more. **`test/…` paths in
+   this README are citations to where a number was measured, not files in this distribution** —
+   the suite is not shipped, because it asserts against one private corpus. See CONTRIBUTING.
 3. **One enormous document was winning everything.** A 616 KB changelog took a
    top-3 slot on **21 of 32** test questions — questions about deployment, about
    pricing, about a bug in a scraper. It had no business in most of them.
@@ -178,8 +193,23 @@ memory({action: "capture"})                     // remember this whole session
 
 Already-captured exchanges are skipped, so running it twice is safe.
 
-A memory is just a markdown file with a `name:` and a `description:` in its frontmatter — see
-*Layout* below. Then:
+A memory is just a markdown file with a `name:` and a `description:` in its frontmatter:
+
+```markdown
+---
+name: freehub-service-log
+description: Symptoms and fix for the loaner-wheel freehub pawls disengaging under load
+---
+
+The pawls stop engaging when the grease thickens, usually on a climb — the cranks turn and
+the wheel does not. Strip and re-grease with a light oil, not the heavy grease in the tub.
+
+Related: [[wheel-build-notes]]
+```
+
+`name` is how the memory is addressed (`get`, `[[wikilinks]]`); `description` is what a search
+sees first, so it is worth writing as the sentence you would want back. Everything after the
+frontmatter is the body. Nothing else is required — no `metadata:` block, no tier, no id. Then:
 
 ```bash
 npm run index        # first build downloads the embedding model, then embeds: ~3 min
@@ -187,7 +217,7 @@ npm test             # self-contained: builds its own fixture corpus, needs none
 npm run verify       # the same check under its other name
 ```
 
-`npm test` drives the real server over raw stdio JSON-RPC and exercises all twelve actions
+`npm test` drives the real server over raw stdio JSON-RPC and exercises all thirteen actions
 against a temporary corpus it writes itself, so it is meaningful on a machine with no memories at
 all. The exit code is the verdict. (The author's full suite is not public — it asserts against one
 particular corpus and would fail for you. See `CONTRIBUTING.md`.)
@@ -197,7 +227,7 @@ the measurement they came from:
 
 ```bash
 npm run measure-keyword-scale   # the absolute keyword scale
-npm run eval:state              # what the index currently contains
+npm run eval:state   # author's tree only — not distributed              # what the index currently contains
 npm run analyse-queries         # what has been asked of it
 ```
 
@@ -420,7 +450,7 @@ happened at that moment"*.
 ### Measuring it
 
 ```
-npm run eval:state        # can the corpus answer "did this finish?"
+npm run eval:state   # author's tree only — not distributed        # can the corpus answer "did this finish?"
 npm run analyse-queries   # what callers actually did, and whether retries recovered
 ```
 
@@ -443,11 +473,17 @@ Two-tier mechanics. `demote` sets `metadata.tier: archive` in the file's
 frontmatter, creating a frontmatter block if the file has none. `promote`
 removes the line.
 
-**Content is never deleted or moved** — only that one metadata line changes.
-The round-trip is byte-for-byte reversible (asserted in the test suite).
-Hot tier = everything not archived. Anything `MEMORY.md` lists is hot by
-definition, so demoting a memory that `MEMORY.md` still names will be undone at
-the next index build; the response says so.
+**Your body text is never deleted or moved** — only that one metadata line changes.
+
+The round trip is byte-for-byte reversible **only if the file already had frontmatter**. If it
+had none, demoting creates a frontmatter block (including a `description` synthesised from the
+body), and promoting afterwards removes the tier line but leaves that block behind. The body is
+untouched either way. Files with no frontmatter are common enough that this is worth knowing
+before you demote one.
+
+Hot tier = everything not archived. Anything `MEMORY.md` lists is hot by definition, so demoting
+a memory that `MEMORY.md` still names is **refused** rather than silently reverted; the response
+says which.
 
 ---
 
@@ -1112,7 +1148,6 @@ Nothing here is a hard limit; they are the numbers, so you can decide.
 | `MEMORY_VEC_ENCODING` | `base64` — how vectors are written to the index. `array` writes the pre-2026-09 shape, for handing an index to an older build |
 | `MEMORY_INLINE_REINDEX_MAX` | `8` files — past this, stamp stale instead of rebuilding |
 | `MEMORY_INLINE_REINDEX_COOLDOWN_MS` | `60000` after a failed inline rebuild |
-| `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a stat pass may be reused |
 | `MEMORY_GIT_REPOS` | *(none)* — `;`/`:`-separated repos for commit + identifier joins. Unset, every git feature below is a no-op |
 | `MEMORY_AUTO_VERIFY` | `1` — auto-verifies identifier-shaped tokens in a query; `0` turns it off |
 | `MEMORY_IDENT_TIMEOUT_MS` | `1500` — an overrunning `git grep` is UNKNOWN, never reported as absent |

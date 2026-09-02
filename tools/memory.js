@@ -143,12 +143,38 @@ async function doSearch({ query, limit, scope, sessionId, after, before, near, a
 // caller cannot see is a default the caller cannot override, and this one silently
 // decides whether hand-written rules or captured conversations answer the question.
 async function doLatest(args) {
-  const scope = validateScope(args.scope) || 'staging';
+  // 🟥 A DEFAULT THAT CANNOT WORK IS NOT A DEFAULT. `latest` defaults to staging because captured
+  // conversations are the only documents carrying a real timestamp. But staging is populated by
+  // the capture hook, so on a FRESH INSTALL it does not exist — and a new user following the
+  // README (point MEMORY_DIR at a folder of notes) got `results: []` plus advice to run an index
+  // command that cannot build a corpus they have not started. Found by a reviewer who had never
+  // seen this project, doing exactly what the README says.
+  //
+  // So: keep staging as the default where staging EXISTS, and fall back to curated where it does
+  // not — saying which happened, because a silent fallback is its own kind of lie. An explicit
+  // scope is always obeyed, including an explicit empty staging.
+  let scope = validateScope(args.scope) || 'staging';
+  let scopeFallback = null;
+  if (!validateScope(args.scope) && scope === 'staging') {
+    let stagingUsable = false;
+    try {
+      const si = getIndex({ scope: 'staging' });
+      stagingUsable = !!si?.present && (si.docs || []).length > 0;
+    } catch { stagingUsable = false; }
+    if (!stagingUsable) {
+      scope = 'curated';
+      scopeFallback = 'staging is empty or not built on this install, so this answered from the ' +
+        'CURATED corpus instead. Curated documents are ordered by file mtime, which is a weaker ' +
+        'clock than a captured timestamp — pass scope:"staging" explicitly once you have captured ' +
+        'sessions, or scope:"curated" to silence this.';
+    }
+  }
   const res = await latest(args.query, {
     limit: args.limit, scope,
     sessionId: args.sessionId, account: args.account, project: args.project,
     includeSummaries: args.includeSummaries, domain: args.domain
   });
+  if (scopeFallback) res.scopeFallback = scopeFallback;
   return {
     ...res,
     scopeHint: {
