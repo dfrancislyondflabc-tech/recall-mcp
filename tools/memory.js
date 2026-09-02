@@ -498,7 +498,7 @@ function doImport(args) {
   }, 'import-output');
 }
 
-function doGet({ name, outline, section: sectionArg, maxChars, offset }) {
+function doGet({ name, outline, section: sectionArg, maxChars, offset, brief }) {
   let section = sectionArg;
   if (!name) throw new Error('get requires `name`');
   const roots = memoryRoots();
@@ -591,6 +591,30 @@ const raw = readFileSync(doc.path, 'utf8');
     };
   } else {
     view = { mode: 'full', totalChars, returnedChars: totalChars, truncated: false, body };
+  }
+
+  // brief:true -> the text and where it came from, nothing else.
+  //
+  // The full response carries ~25 provenance and freshness fields, which are the right default
+  // for a caller deciding whether to TRUST a memory. They are the wrong default for the one
+  // path the absence design depends on: an absence note tells the reader to open bestWeak[0]
+  // and read it, and that reader wants the sentence, not the dossier. Two independent testers
+  // who had never seen this codebase raised it unprompted. Additive — the default is unchanged.
+  if (brief) {
+    return guardValue({
+      found: true,
+      name: doc.name,
+      path: doc.path,
+      // Exactly the fields that say WHAT WAS RETURNED, so a truncated read is never mistaken
+      // for a whole document — the one piece of bookkeeping brevity must not drop.
+      mode: view.mode,
+      totalChars: view.totalChars,
+      returnedChars: view.returnedChars,
+      truncated: view.truncated,
+      readNote: view.readNote,
+      headings: view.headings,
+      body: view.body
+    }, 'get-output');
   }
 
   return guardValue({
@@ -1137,6 +1161,7 @@ export function registerMemoryTools(server) {
       run: z.boolean().optional().describe('probe_status: execute the sweep now instead of reading the last sidecar. Probes never run on the search path.'),
       wait: z.boolean().optional().describe('index: block until the build finishes instead of returning a jobId. Only for callers that can wait minutes — the default is async because a blocking index TIMED OUT through MCP.'),
       outline: z.boolean().optional().describe('get: return ONLY the heading outline with sizes and offsets, no body. The cheapest way to navigate a large memory before reading any of it.'),
+      brief: z.boolean().optional().describe('get: return only the text and where it came from (name, path, body, and what was truncated) — not the ~25 provenance and freshness fields. Use it when you already decided to read this memory and just want the content, e.g. following an absence note that told you to open bestWeak[0].'),
       section: z.string().optional().describe('get: return only this heading\'s block (to the next heading of the same or higher level). THE primary read path for a large memory — prefer it over paging.'),
       maxChars: z.number().int().min(200).max(200000).optional().describe("get: cap the body (default 20000). A capped response always carries totalChars + truncated so a slice is never mistaken for the whole document. search with scope:'everything': raises that compact view's snippet budget (its default is deliberately small; this is the override)."),
       offset: z.number().int().min(0).optional().describe('get: start the body at this character offset, to continue a previous slice.'),

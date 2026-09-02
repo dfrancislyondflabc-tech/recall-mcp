@@ -17,6 +17,12 @@
 //
 // Runs from the Stop hook: at most one commit per turn, and only when something
 // actually changed. It must NEVER break the hook, so every path exits 0.
+//
+// 🟥 A DELETED MEMORY IS HELD BACK, NOT COMMITTED. Staging used to be a bare `git add -A`,
+// which stages deletions — so an accidental removal was committed by this very hook within
+// the same turn and left HEAD. History still held it, but nothing said so. A deleted *.md is
+// now un-staged again and reported loudly; it stays in HEAD, so recovery is one command.
+// `--accept-deletions` commits them deliberately. See MCP-MEMORY-PROBLEMS-AND-FIXES.md MEM-6.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -106,6 +112,15 @@ try {
   if (process.argv.includes('--status')) {
     console.log(`${names.length} uncommitted change(s): ${added} added, ${modified} modified, ${deleted} deleted`);
     for (const n of names.slice(0, 20)) console.log('  ' + n);
+    // Say plainly that a deletion will NOT be committed — otherwise --status implies it will be,
+    // and the next reader wonders why the count never goes down.
+    const pendingDel = lines.filter((l) => /^\s*D/.test(l))
+      .map((l) => l.slice(3).replace(/^"|"$/g, '')).filter((n) => n.endsWith('.md'));
+    if (pendingDel.length) {
+      console.log(`\n${pendingDel.length} deleted memory file(s) are HELD, not committed — still in HEAD:`);
+      for (const n of pendingDel.slice(0, 20)) console.log('  ' + n);
+      console.log('  restore: git -C <dir> checkout -- <file>   |   accept: --accept-deletions');
+    }
     process.exit(0);
   }
 
@@ -136,18 +151,75 @@ try {
     say(`stamped modified on ${stamped} changed file(s)`);
   } catch (_) { /* stamping is best-effort; the commit below still runs */ }
 
+  // ---- A DELETED MEMORY IS HELD, NOT COMMITTED -----------------------------
+  //
+  // This script used to stage with a bare `git add -A`, which stages DELETIONS. The sequence
+  // for an accidental loss was therefore: something removes a memory file -> this hook fires
+  // within the same turn -> the deletion is committed -> the file leaves HEAD. History still
+  // held it, but nothing said so, and finding it again needed `git log --diff-filter=D`.
+  // The snapshot system FAITHFULLY RECORDED THE LOSS instead of resisting it.
+  //
+  // Now: everything else is staged as before, and a deleted *.md is un-staged again, so the
+  // file stays in HEAD and recovery is one obvious command. The deletion remains visible in
+  // `git status`, so this warns every turn until a human resolves it — which is the point,
+  // and why `--accept-deletions` has to exist. A guard with no cheap way to say "yes, I meant
+  // it" is a guard that gets deleted; Claude's own memory guidance says to remove memories
+  // that turn out to be wrong, and that must stay a one-command action.
+  //
+  // Only *.md is held. A stray non-memory file being removed is not what this protects.
+  const ACCEPT_DELETIONS = process.argv.includes('--accept-deletions');
+  const deletedMd = lines
+    .filter((l) => /^\s*D/.test(l))
+    .map((l) => l.slice(3).replace(/^"|"$/g, ''))
+    .filter((n) => n.endsWith('.md'));
+
+  git(dir, ['add', '-A']);
+  const held = (!ACCEPT_DELETIONS && deletedMd.length) ? deletedMd : [];
+  if (held.length) {
+    // Unstage just these paths. The working tree still lacks the file; HEAD still has it.
+    try { git(dir, ['reset', '-q', 'HEAD', '--', ...held]); } catch (_) { /* reported below */ }
+  }
+
+  // What actually ended up staged decides both whether to commit and what the message says.
+  let stagedNames = [];
+  try {
+    stagedNames = git(dir, ['diff', '--cached', '--name-only']).split('\n').filter(Boolean);
+  } catch (_) { stagedNames = names; }
+
+  if (held.length) {
+    console.error(
+      `\n[commit-memories] 🟥 ${held.length} MEMORY FILE(S) DISAPPEARED — NOT COMMITTED\n` +
+      held.slice(0, 12).map((n) => '                  ' + n).join('\n') +
+      (held.length > 12 ? `\n                  …and ${held.length - 12} more` : '') +
+      '\n\n                  They are still in HEAD, so nothing is lost yet.\n' +
+      `                  Restore:  git -C "${dir}" checkout -- <file>\n` +
+      `                  Restore all: git -C "${dir}" checkout -- ${held.slice(0, 3).map((n) => `"${n}"`).join(' ')}` +
+      (held.length > 3 ? ' …' : '') + '\n' +
+      '                  Meant it? Re-run with --accept-deletions to commit the removal.\n');
+  }
+
+  if (!stagedNames.length) {
+    say('nothing staged (only held deletions); no commit');
+    process.exit(0);
+  }
+
+  const heldSet = new Set(held);
+  const committedNames = names.filter((n) => !heldSet.has(n));
   const parts = [];
   if (added) parts.push(`+${added}`);
   if (modified) parts.push(`~${modified}`);
-  if (deleted) parts.push(`-${deleted}`);
-  const headline = names.length === 1
-    ? `memory: ${names[0]}`
-    : `memory: ${names.length} files (${parts.join(' ')})`;
+  // Only count deletions that are actually going INTO this commit.
+  const deletedCommitted = ACCEPT_DELETIONS ? deleted : deleted - held.length;
+  if (deletedCommitted > 0) parts.push(`-${deletedCommitted}`);
+  const headline = committedNames.length === 1
+    ? `memory: ${committedNames[0]}`
+    : `memory: ${committedNames.length} files (${parts.join(' ')})`;
 
-  git(dir, ['add', '-A']);
   git(dir, ['commit', '-q', '-m',
-    headline + '\n\n' + names.slice(0, 40).map((n) => '  ' + n).join('\n') +
-    (names.length > 40 ? `\n  …and ${names.length - 40} more` : '') +
+    headline + '\n\n' + committedNames.slice(0, 40).map((n) => '  ' + n).join('\n') +
+    (committedNames.length > 40 ? `\n  …and ${committedNames.length - 40} more` : '') +
+    (held.length ? `\n\nHELD BACK (deleted, left in HEAD): ${held.slice(0, 10).join(', ')}` : '') +
+    (ACCEPT_DELETIONS && deleted ? '\n\nDeletions committed deliberately (--accept-deletions).' : '') +
     '\n\nCommitted automatically by scripts/commit-memories.js (Stop hook).'],
     { env: { ...process.env, GIT_AUTHOR_NAME: 'memory-autocommit', GIT_COMMITTER_NAME: 'memory-autocommit' } });
   say('committed: ' + headline);

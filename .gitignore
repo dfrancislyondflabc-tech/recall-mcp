@@ -38,6 +38,11 @@ store/
 # atomic-write scratch files (lib/index-store.js)
 *.tmp
 
+# Shadow telemetry (lib/ordinary-shadow.js). It records REAL QUERY TEXT and corpus snippets,
+# so it is exactly the kind of file that must never reach a repository. It was committed once,
+# by a `git add -A`, and the release gate is what caught it.
+.shadow/
+
 # The vector cache (lib/vector-cache.js): ~116 MB of embeddings, derivable from
 # the corpus, and it mirrors chunk text. Never to a remote.
 .vector-cache.json
@@ -70,3 +75,7 @@ claude-config-snippet.json
 
 # This machine only: paths, org domain, self addresses. Never shipped.
 local-config.json
+
+# Measurement before-images (scripts/measure-vector-fidelity.js). Same content class as the index
+# and the query log: they mirror corpus text, so they never reach a remote.
+.baseline/

@@ -52,7 +52,11 @@ git -C "$ROOT" archive HEAD | tar -x -C "$DEST"
 echo "== removing what must not ship"
 EXCLUDE=(
   test                              # asserts against the author's corpus; holds IPs, an address, a named fixture dir
-  .github                           # both workflows grep for a plaintext credential
+  .github/workflows                 # both workflows grep for a live credential BY VALUE
+                                    # (portable-macos.yml:103 greps for the literal, to prove
+                                    # it is absent from a zip) — the file therefore CONTAINS it.
+                                    # Narrowed from all of .github so ISSUE_TEMPLATE can ship;
+                                    # the release gate still scans everything that remains.
   lib/alias-table.json              # one vendor's product catalogue; feature is off by default
   scripts/build-alias-table.js      # scrapes that vendor's site
   scripts/build-zip.sh              # the author's packaging, embeds their paths
@@ -80,6 +84,10 @@ EXCLUDE=(
   scripts/measure-sku-alias.js
   scripts/measure-library-recall.js
   scripts/monitor-margins.js
+  # Same class again, caught by the gate rather than by reading this list: its question set is
+  # written against the author's corpus and names an internal tool. scripts/measure-index-memory.js
+  # is deliberately NOT excluded — it takes an index path and asserts nothing about content.
+  scripts/measure-vector-fidelity.js
 )
 for path in "${EXCLUDE[@]}"; do
   if [ -e "$DEST/$path" ]; then rm -rf "${DEST:?}/$path"; echo "    - $path"; fi

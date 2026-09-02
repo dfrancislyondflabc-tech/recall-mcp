@@ -461,9 +461,19 @@ could not read the documents it exists for, and the caller fell back to `cat`. T
 | `outline: true` | headings only, with sizes and offsets. One cheap call to see what is in there. |
 | `section: "## Gate #24"` | that heading's whole block, to the next heading of the same or higher level. **The primary read path for a large memory.** |
 | `maxChars` / `offset` | the bounded fallback. Default 20,000, and the outline rides along so one call is enough to aim the next. |
+| `brief: true` | the text and where it came from — `name`, `path`, `body`, and the truncation bookkeeping — without the ~25 provenance and freshness fields. |
 
 Every truncated response carries `totalChars`, `returnedChars` and `truncated`. A slice that looks
 like a whole document is how a caller concludes something is absent when it is merely past the cut.
+
+Those three fields survive `brief: true` as well. Brevity may drop provenance; it may never drop
+the statement of what was left out.
+
+The full response is the right default when you are deciding whether to **trust** a memory — who
+wrote it, when, from which account. `brief` is for when you have already decided to read one and
+just want the content: most often after a search says the corpus may hold your answer in other
+words and tells you to open the best weak match. It saves a fixed ~1 KB per call, which is
+marginal against a long document and most of the response against a one-paragraph note.
 
 Slicing happens **after** the secrets scrub, so paging cannot reassemble a removed region.
 
@@ -1099,6 +1109,9 @@ Nothing here is a hard limit; they are the numbers, so you can decide.
 | `MEMORY_PROBE_RESULTS` | `./.probe-results.json` — the probe sidecar. It is **per install, not per corpus**, so set this per corpus if two corpora share one checkout |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a corpus stat pass is reused before it is taken again |
 | `MEMORY_QUERY_LOG` | `./.query-log.jsonl` — every query, verbatim, for measurement. `0` disables it |
+| `MEMORY_ORDINARY_SHADOW` | `1` — a measurement that changes nothing. When a refusal's missing words are all ordinary English, one line is logged. `0` disables it |
+| `MEMORY_ORDINARY_SHADOW_LOG` | `./.shadow/ordinary-word-shadow.jsonl` — where those lines go |
+| `MEMORY_VEC_ENCODING` | `base64` — how vectors are written to the index. `array` writes the pre-2026-09 shape, for handing an index to an older build |
 | `MEMORY_INLINE_REINDEX_MAX` | `8` files — past this, stamp stale instead of rebuilding |
 | `MEMORY_INLINE_REINDEX_COOLDOWN_MS` | `60000` after a failed inline rebuild |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a stat pass may be reused |
