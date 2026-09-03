@@ -1158,17 +1158,24 @@ embedding model (~215 MB resident); everything above that scales with **chunks**
 | 12 notes | 12 | 0.2 MB | ~3 s | ~20 ms | 267 MB |
 | 600 notes | 2,440 | 28 MB | ~87 s | 32 ms | 321 MB |
 | 2,651 notes | 15,107 | — | — | 101 ms | 968 MB |
+| 2,790 notes | 17,815 | 64 MB | ~140 s | ~100 ms | 812 MB |
 
 Three things worth knowing before you point this at something large:
 
 - **Build time follows your biggest file, not your corpus.** 600 ordinary notes index in about
   90 seconds; a single 4.6 MB document takes 163 seconds on its own. If a rebuild is slow, one
   file is usually the reason, and the build now names it.
-- **Resident memory is dominated by vectors held as ordinary JavaScript arrays** — roughly 45 KB
-  per chunk against a 384-dimension vector that is ~3 KB of actual numbers. A `Float32Array`
-  representation would cut that severalfold and has not been done.
-- **Search stays fast**: 32 ms at 600 documents, ~101 ms at 2,651. It is the memory, not the
-  latency, that will bother you first.
+- **Vectors are `Float32Array` in memory and base64 float32 on disk** (index format v2; `lib/vec.js`
+  is the single representation authority). That is 1,536 bytes per 384-dimension vector against
+  ~3,700 for the plain JavaScript array this used to keep — measured, not estimated. It costs nothing
+  in accuracy: the embedding model emits float32, so float64 stored no extra information, and the
+  largest cosine difference between the two over 200 vector pairs is **4.9 × 10⁻⁹**, against the
+  10⁻³–10⁻² score gaps that actually decide a rank. **What now dominates resident memory is the
+  parsed index itself** — chunk text, names, descriptions and the BM25 postings — not the vectors:
+  17,815 chunks hold only ~27 MB of vector data inside an 812 MB process.
+- **Search stays fast**: 32 ms at 600 documents, ~100 ms at 2,790. It is the memory, not the
+  latency, that will bother you first — the ceiling is your machine's RAM, and one process holding
+  the index is what sits in it.
 
 Nothing here is a hard limit; they are the numbers, so you can decide.
 
