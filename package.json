@@ -1,6 +1,6 @@
 {
   "name": "recall-mcp",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "type": "module",
   "description": "Two-tier hybrid (BM25F + dense + phrase) retrieval MCP server over Claude persistent memory",
   "main": "index.js",
@@ -14,6 +14,7 @@
     "commit-memories": "node scripts/commit-memories.js --verbose",
     "memories-status": "node scripts/commit-memories.js --status",
     "check:release": "node scripts/check-release-clean.mjs",
+    "capture": "node scripts/timed-capture.mjs",
     "test": "node scripts/verify-stdio.js"
   },
   "dependencies": {

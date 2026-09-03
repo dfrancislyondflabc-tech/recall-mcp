@@ -22,7 +22,7 @@
 //    byte-identical, and buildIndex reuses vectors by mtime+hash — so the steady
 //    state is "a few new documents", not "re-embed the world".
 
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, unlinkSync, readFileSync, appendFileSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +49,54 @@ const projectDirs = () => {
   } catch (_) { return []; }
 };
 
+// ---- TIMED vs HOOK: provisional versus final -------------------------------------------------
+//
+// A hook run happens when a turn ENDS, so every exchange in the transcript is finished and all of
+// them are captured. A TIMED run happens mid-turn, so the last exchange is still being written —
+// ingest-transcript.js pairs "one user turn + everything the assistant said before the next user
+// turn", which makes the in-flight exchange exactly the one with no following user turn.
+//
+// A timed run therefore DEFERS the final exchange to the next pass. Not for safety — a partial is
+// self-correcting, because the writer overwrites whenever content differs — but because a growing
+// exchange rewritten every interval is re-embedded every interval, and a truncated answer is
+// briefly searchable as though it were complete.
+//
+// 🟥 The hook must NOT defer. Dropping the last exchange there would lose the final exchange of
+// every session, since no further user turn ever arrives.
+const TIMED = process.argv.includes('--timed') || process.env.MEMORY_INGEST_TIMED === '1';
+
 const log = (...a) => console.error('[auto-ingest]', ...a);
+
+// ---- A RUN LEAVES A TRACE ---------------------------------------------------------------------
+//
+// Everything above logs to stderr, which the hook host discards. So when the staging index turned
+// out to be five hours stale, there was no way to tell whether this had run and skipped, run and
+// failed, or never run at all — the question was unanswerable by the one instrument that could
+// have answered it. One line per run, appended, so the next occurrence is diagnosable.
+//
+// Every field is an OUTCOME, not a narration: a reader wants to know what happened, not what the
+// script was thinking. `why` is present exactly when nothing was written.
+const RUN_LOG = process.env.MEMORY_INGEST_LOG
+  || (ownStoreDir() ? join(ownStoreDir(), '.ingest-runs.jsonl') : null);
+const RUN_LOG_MAX = Number(process.env.MEMORY_INGEST_LOG_MAX_BYTES ?? 2 * 1024 * 1024);
+let runLogged = false;
+function runLog(outcome, extra = {}) {
+  if (runLogged) return;              // one line per run, whichever exit is reached first
+  runLogged = true;
+  if (!RUN_LOG) return;
+  try {
+    // Roll rather than grow without bound — the same discipline as the query log.
+    try { if (statSync(RUN_LOG).size > RUN_LOG_MAX) renameSync(RUN_LOG, RUN_LOG + '.1'); } catch (_) { /* first run */ }
+    appendFileSync(RUN_LOG, JSON.stringify({
+      at: new Date().toISOString(),
+      trigger: TIMED ? 'timed' : 'hook',
+      outcome,
+      pid: process.pid,
+      ...extra
+    }) + '\n', 'utf8');
+  } catch (_) { /* a log that cannot be written must never fail an ingest */ }
+}
+process.on('exit', () => runLog('exited', {}));
 
 /** A session id resolves to its own transcript wherever it lives. */
 function resolveTranscript(arg) {
@@ -122,12 +169,13 @@ if (!CAPTURE_ALWAYS) {
   if (!hb.on) {
     // Silent and exit 0: a session you had memory switched off for is not an error, and a hook
     // that prints on every ordinary session end is a hook people delete.
-    process.exit(0);
+    runLog('skipped', { why: 'memory connector not recently on (heartbeat cold)' });
+      process.exit(0);
   }
 }
 
 const transcript = resolveTranscript(process.argv[2] || sessionIdFromStdin());
-if (!transcript || !existsSync(transcript)) { log('no transcript; nothing to do'); process.exit(0); }
+if (!transcript || !existsSync(transcript)) { log('no transcript; nothing to do'); runLog('skipped', { why: 'no transcript' }); process.exit(0); }
 
 const store = ownStoreDir();
 const stagingIdx = stagingIndexPath();
@@ -154,6 +202,7 @@ if (DEBOUNCE_SEC > 0 && stamps[txKey]) {
   // Growth is the real signal; the clock alone would drop a burst of work.
   if (sinceRun < DEBOUNCE_SEC && size === stamps[txKey].size) {
     log(`nothing new since ${sinceRun.toFixed(0)}s ago (transcript unchanged); skipping`);
+    runLog('skipped', { why: 'debounced: transcript unchanged', sinceSec: Math.round(sinceRun) });
     process.exit(0);
   }
 }
@@ -181,6 +230,7 @@ if (existsSync(lock)) {
   try { holder = parseInt(readFileSync(lock, 'utf8').trim(), 10); } catch (_) { /* unreadable = treat as dead */ }
   if (processAlive(holder)) {
     log(`another run (pid ${holder}) holds the lock; exiting`);
+    runLog('skipped', { why: `lock held by live pid ${holder}` });
     process.exit(0);
   }
   log(`lock held by dead pid ${holder || '?'} (${age.toFixed(0)}s old); taking it`);
@@ -190,7 +240,10 @@ writeFileSync(lock, String(process.pid));
 try {
   const before = existsSync(store) ? readdirSync(store).filter((f) => f.endsWith('.md')).length : 0;
 
-  execFileSync(process.execPath, [join(ROOT, 'scripts/ingest-transcript.js'), transcript, '--write'],
+  // --defer-last is what makes a timed run provisional: the in-flight exchange waits for the
+  // next pass rather than being written and re-embedded on every interval.
+  execFileSync(process.execPath, [join(ROOT, 'scripts/ingest-transcript.js'), transcript, '--write',
+    ...(TIMED ? ['--defer-last'] : [])],
     { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
 
   // NO process.exit() INSIDE THIS TRY. process.exit() does not run `finally`,
@@ -201,6 +254,7 @@ try {
   const after = readdirSync(store).filter((f) => f.endsWith('.md')).length;
   if (after === before) {
     log(`no new exchanges (${after} in store); index untouched`);
+    runLog('no-op', { why: 'no new exchanges', storeFiles: after });
   } else {
     log(`${after - before} new exchange(s); refreshing staging index`);
     // rootsForCorpus, NOT !primary. There are three corpora now, and the
@@ -210,9 +264,12 @@ try {
     const staging = rootsForCorpus('staging');
     const report = await buildIndex({ dir: staging, out: stagingIdx });
     log(`staging index: ${report.fileCount ?? after} docs, ${report.chunks ?? '?'} chunks`);
+    runLog('captured', { newExchanges: after - before, storeFiles: after,
+      indexedDocs: report.fileCount ?? after, indexedChunks: report.chunks ?? null });
   }
 } catch (e) {
   log('FAILED:', e.message);
+  runLog('failed', { error: String(e.message).slice(0, 300) });
   process.exitCode = 1;
 } finally {
   try {

@@ -1145,6 +1145,8 @@ Nothing here is a hard limit; they are the numbers, so you can decide.
 | `MEMORY_PROBE_RESULTS` | `./.probe-results.json` — the probe sidecar. It is **per install, not per corpus**, so set this per corpus if two corpora share one checkout |
 | `MEMORY_FRESHNESS_TTL_MS` | `3000` — how long a corpus stat pass is reused before it is taken again |
 | `MEMORY_QUERY_LOG` | `./.query-log.jsonl` — every query, verbatim, for measurement. `0` disables it |
+| `MEMORY_CAPTURE_WINDOW_MIN` | `15` — how far back `npm run capture` looks for an active transcript |
+| `MEMORY_INGEST_LOG` | `<store>/.ingest-runs.jsonl` — one line per capture run |
 | `MEMORY_VEC_ENCODING` | `base64` — how vectors are written to the index. `array` writes the pre-2026-09 shape, for handing an index to an older build |
 | `MEMORY_INLINE_REINDEX_MAX` | `8` files — past this, stamp stale instead of rebuilding |
 | `MEMORY_INLINE_REINDEX_COOLDOWN_MS` | `60000` after a failed inline rebuild |

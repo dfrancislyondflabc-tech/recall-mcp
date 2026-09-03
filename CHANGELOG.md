@@ -10,6 +10,39 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.5.0] — 2026-09-02
+
+### Added
+
+- **Capture no longer waits for a turn to end.** The capture hook fires on `Stop`, so its unit is a
+  *turn* — an assistant's whole run of work between two of your messages. Measured in one real
+  session: ten exchanges written in the same second, then a **283-minute gap** with nothing
+  captured. The data was never missing — the transcript is written continuously, verified live at
+  17,222,315 → 17,233,511 bytes in 28 seconds while capture sat 2.0 minutes behind. Only the
+  trigger waited.
+
+  `npm run capture` (`scripts/timed-capture.mjs`) can now be scheduled. It walks **every**
+  transcript touched inside a window, not just the most recent — running two conversations at once
+  otherwise captures one and silently starves the other. It adds no state: the existing debounce
+  and lock make it safe to run at any frequency.
+
+  Timed runs are **provisional** and defer the in-flight exchange; hook runs are **final** and keep
+  everything. That asymmetry is the whole design — dropping the last exchange on the hook would
+  lose the final exchange of every session. A deferred exchange, once captured, is byte-identical
+  to what a hook-only run would have produced.
+
+- **Every capture run leaves one line in `.ingest-runs.jsonl`** — when, what triggered it, how many
+  exchanges, whether the index refreshed, and *why* it did nothing when it did nothing. Everything
+  previously went to stderr, which a hook host discards; that is exactly why "was the index stale
+  because capture never ran, or ran and skipped?" was unanswerable. Rolls at a cap.
+
+### Fixed
+
+- A test asserted `found === true` against a `git grep` with a 1500 ms timeout, which returns
+  *unknown* under load — measured at 152 ms when run alone, and it failed and passed on consecutive
+  runs with no code change. The production timeout and its never-report-absent-on-timeout behaviour
+  are unchanged; only the test's budget moved.
+
 ## [1.4.2] — 2026-09-02
 
 ### Security
@@ -246,6 +279,7 @@ Notable behaviour, since there is no earlier entry to diff against:
 - **Windows correctness**: UTF-8 BOMs and CRLF line endings in frontmatter and bodies are handled.
 - **Every query is logged locally** for measurement (`MEMORY_QUERY_LOG`, `0` disables).
 
+[1.5.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.5.0
 [1.4.2]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.2
 [1.4.1]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.1
 [1.4.0]: https://github.com/dfrancislyondflabc-tech/recall-mcp/releases/tag/v1.4.0

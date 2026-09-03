@@ -142,6 +142,21 @@ for (let i = 0; i < turns.length; i++) {
   exchanges.push({ ask: turns[i].text.trim(), body, ts: turns[i].ts });
 }
 
+// ---- --defer-last: the in-flight exchange waits for the next pass ----------------------------
+//
+// The pairing above makes the FINAL exchange the one with no following user turn — which mid-turn
+// is the one still being written. A timed capture drops it; a hook capture must not, because at
+// the end of a session no further user turn ever arrives and dropping it there would lose the last
+// exchange permanently.
+//
+// Not a safety measure: the writer below overwrites whenever content differs, so a partial would
+// self-correct anyway. It avoids re-embedding a growing exchange on every interval, and avoids a
+// truncated answer being briefly searchable as though it were complete.
+if (process.argv.includes('--defer-last') && exchanges.length) {
+  const deferred = exchanges.pop();
+  console.log(`deferring the in-flight exchange to the next pass: ${JSON.stringify(String(deferred.ask || '').slice(0, 60))}`);
+}
+
 // ---- EXTERNAL ADDRESSES ---------------------------------------------------
 // Auto-capture pulls in whatever the conversation contained, and one of these
 // chats answers customer email: a survey of the store found 324 distinct
