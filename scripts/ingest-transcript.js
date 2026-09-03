@@ -32,8 +32,9 @@
 // the reply is exactly the kind of wrong-version-next-to-right-version the
 // corpus should not carry.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import { ownStoreDir, accountLabel } from '../lib/config.js';
 import { redact } from '../lib/secrets.js';
 import { commitsInRange, configuredRepos } from '../lib/git-join.js';
@@ -41,7 +42,11 @@ import { localList } from '../lib/local-config.js';
 
 const file = process.argv[2];
 const WRITE = process.argv.includes('--write');
-const LIMIT = (() => { const i = process.argv.indexOf('--limit'); return i === -1 ? Infinity : parseInt(process.argv[i + 1]) || Infinity; })();
+// --rewrite-only  apply an extractor change to HISTORY without creating anything new: only files
+// that already exist are (re)written. A session that was never captured (a scheduled task, another
+// account's chat) stays uncaptured, which is the state its own hook left it in.
+const REWRITE_ONLY = process.argv.includes('--rewrite-only');
+const LIMIT =(() => { const i = process.argv.indexOf('--limit'); return i === -1 ? Infinity : parseInt(process.argv[i + 1]) || Infinity; })();
 if (!file) { console.error('usage: ingest-transcript.js <transcript.jsonl> [--write] [--limit N]'); process.exit(2); }
 
 // --backfill  ingest OLD transcripts without claiming them.
@@ -86,6 +91,9 @@ const isMachineTurn = (t) => {
   if (!t) return true;
   if (t.includes('<system-reminder>')) return true;
   if (t.includes('<task-notification>')) return true;
+  // Another Claude session talking to this one over the desktop's cross-session socket -- delivered
+  // mid-turn like an interjection, but not the human. Found folded as one (x-b58a69af, 2026-08-29).
+  if (/^\s*<cross-session-message\b/.test(t)) return true;
   if (t.startsWith('[SYSTEM NOTIFICATION')) return true;
   if (t.startsWith('Caveat: The messages below')) return true;
   if (/^<(command-name|local-command|command-message|bash-input|bash-stdout)/.test(t)) return true;
@@ -93,6 +101,28 @@ const isMachineTurn = (t) => {
   const tagChars = (t.match(/<\/?[a-z][a-z0-9-]*>/gi) || []).join('').length;
   if (tagChars > t.length * 0.15) return true;
   return false;
+};
+
+// The final report of an asynchronous subagent, as the client delivers it to the parent:
+// <task-notification><task-id>…</task-id>…<result>…</result></task-notification>. Only a
+// notification that CARRIES a result counts; a status-only one ("completed", "started") adds nothing.
+const agentResultOf = (t) => {
+  if (!t || !t.includes('<task-notification>')) return null;
+  // OUTER result = first <result> to LAST </result>. An agent that fanned out quotes its own
+  // sub-agents' envelopes; a non-greedy match stopped at the INNER </result> and stored the inner
+  // envelope as prose while the outer conclusion was lost (reviewed). Nested envelopes are stripped
+  // wholesale -- their reports are the inner agent's, not this one's conclusion.
+  const start = t.search(/<result>/i); const end = t.search(/<\/result>(?![\s\S]*<\/result>)/i);
+  if (start === -1 || end === -1 || end <= start) return null;
+  let text = t.slice(start + '<result>'.length, end)
+    .replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, '')
+    .replace(/^\s*\[harness:[^\]]*\]\s*/i, '')          // the host's envelope note is not the agent's words
+    // A report must not mint graph edges: [[name]] inside machine-generated text becomes plain text.
+    .replace(/\[\[/g, '[ [').replace(/\]\]/g, '] ]')
+    .trim();
+  if (text.length < 40) return null;
+  const id = (/<task-id>([^<]+)<\/task-id>/i.exec(t) || [])[1]?.trim() || null;
+  return { id, text };
 };
 
 const sessionId = basename(file, '.jsonl');
@@ -118,43 +148,213 @@ function deriveTitle(raw) {
 }
 const short = sessionId.slice(0, 8);
 
+// ---- INTERJECTIONS: the message typed WHILE a turn is running ---------------------------------
+//
+// The desktop client does not write that message as a user turn. It writes a `queue-operation`
+// (`enqueue`, then `remove` with reason `absorbed_mid_turn` -- or no reason at all before
+// 2026-08-26) and hands the text to the model inside a tool result's <system-reminder>. Tool results
+// carry no `text` block, so before this the words were invisible to capture twice over.
+//
+// MEASURED 2026-09-02 across every transcript on this machine: 211 absorbed interjections, 0 of
+// which ever became a user turn; 160 were nowhere in the store, 44 survived only because a
+// compaction summary happened to quote them. A further 363 human messages sit in the older,
+// reason-less spelling. What was in them: "don't do this one yet", "ignore what I said about…",
+// rulings, defect reports -- corrections, which is exactly what gets typed mid-turn.
+//
+// An interjection's reply is the REMAINDER OF THE TURN THAT ABSORBED IT, so it belongs to the
+// exchange it interrupted, not to a new one. That also keeps the positional names stable: folding
+// changes only the exchanges that had interjections; inserting would renumber everything after.
+//
+// `enqueue` is NOT the signal -- every prompt is enqueued (4,571 of them). Only a `remove` that
+// still carries content marks a message that never became a turn. `delivered_to_agent` (9 seen) is
+// folded too: the words were typed into THIS conversation, and although subagent transcripts DO
+// exist on disk (`<session>/subagents/agent-*.jsonl`, 468 for one session alone) this pipeline
+// never ingests them -- the walker reads depth 1 only -- so nothing else would hold them. If
+// subagent ingestion is ever enabled, revisit this or the message will be stored in both places.
+// (All 9 seen today are task-notification text and fall to isMachineTurn before the fold anyway.)
+// The reason list is explicit so a future, unknown reason (a cancelled message, say) is not
+// silently stored as if it had been said.
+const INTERJECTION_REASONS = new Set(['absorbed_mid_turn', 'delivered_to_agent']);
+const isInterjection = (j) => j.type === 'queue-operation' && j.operation === 'remove'
+  && typeof j.content === 'string' && j.content.trim()
+  && (j.reason === undefined || j.reason === null || INTERJECTION_REASONS.has(j.reason));
+const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+
 const sessionTitle = deriveTitle(readFileSync(file, 'utf8'));
 const turns = [];
+let openUser = -1;                      // index in `turns` of the HUMAN user turn whose reply is running
+let interjectionsUnattached = 0;        // typed before any human turn existed: nothing to attach to
 for (const line of readFileSync(file, 'utf8').split('\n')) {
   if (!line.trim()) continue;
   let j; try { j = JSON.parse(line); } catch { continue; }
+  if (isInterjection(j)) {
+    const t = j.content.trim();
+    if (isMachineTurn(t)) continue;     // a queued task notification is machinery in any envelope
+    if (openUser === -1) { interjectionsUnattached++; continue; }
+    (turns[openUser].interjections ||= []).push({ text: t, ts: j.timestamp || null });
+    continue;
+  }
   const role = j.message?.role;
   if (role !== 'user' && role !== 'assistant') continue;
   const t = textOf(j.message.content, ['text']);   // 'thinking' and tool blocks dropped here
   if (!t) continue;
   turns.push({ role, text: t, ts: j.timestamp || null });
+  // A machine user turn (a task notification landing mid-reply) does not take over the open ask:
+  // the human is still the one being answered, and an interjection typed after it belongs to them.
+  // Measured before this: 21 interjections in one session "fell in machine turns" and were dropped.
+  if (role === 'user' && !isMachineTurn(t)) openUser = turns.length - 1;
+}
+// If the client later materialised the same text as a real user turn, it will be captured as one;
+// keeping the copy here would store the question twice. Measured over 676 transcripts: the ONLY
+// real duplicate ("continue") matched a LATER human turn, not the next one, and a task notification
+// sat between -- so compare against the next few HUMAN turns, skipping machine ones.
+const DEDUP_LOOKAHEAD_HUMAN_TURNS = 3;
+for (let i = 0; i < turns.length; i++) {
+  if (!turns[i].interjections) continue;
+  const later = turns.slice(i + 1).filter((t) => t.role === 'user' && !isMachineTurn(t.text))
+    .slice(0, DEDUP_LOOKAHEAD_HUMAN_TURNS).map((t) => norm(t.text));
+  if (!later.length) continue;
+  turns[i].interjections = turns[i].interjections.filter((x) => !later.includes(norm(x.text)));
+  if (!turns[i].interjections.length) delete turns[i].interjections;
 }
 
 // Pair: one user turn + everything the assistant said before the next user turn.
+//
+// 🟥 A MACHINE TURN WITH A HUMAN INTERJECTION IS STILL DROPPED, and that is a measured trade, not an
+// oversight. The first draft kept it (the notification is noise, the human words are the ask), and
+// the pre-registered P1 check falsified it: 27 sessions gained a file, which means every later
+// exchange in those sessions was RENUMBERED -- names are positional, so an inserted exchange shifts
+// the content behind every `x-<sid>-NNNN` after it and breaks the [[prev]] chain. Twenty-seven
+// interjections are the price of that stability; they are COUNTED below so the loss is visible, and
+// the real cure is content-stable names, which is an architecture change and is recorded as such.
 const exchanges = [];
+let interjectionsInShortReplies = 0;
 for (let i = 0; i < turns.length; i++) {
   if (turns[i].role !== 'user') continue;
   if (isMachineTurn(turns[i].text)) continue;
+  const inter = (turns[i].interjections || []).map((x) => x.text);
   const reply = [];
-  for (let k = i + 1; k < turns.length && turns[k].role === 'assistant'; k++) reply.push(turns[k].text);
+  // THE REPLY RUNS UNTIL THE NEXT HUMAN TURN, not the next entry in the user role. A task
+  // notification lands in the user role mid-reply; stopping at it orphaned everything the assistant
+  // said afterwards -- and the notification, skipped as an ask, never picked it up. Measured over
+  // 122 transcripts: 230 such cuts, 1,663 assistant turns, 912,151 chars -- 9.0% of ALL assistant
+  // prose -- and the surviving document read as complete ("Waiting for it to complete." with the
+  // 5,767-char conclusion in no store file).
+  for (let k = i + 1; k < turns.length; k++) {
+    if (turns[k].role === 'assistant') { reply.push(turns[k].text); continue; }
+    if (isMachineTurn(turns[k].text)) {
+      // AN AGENT'S REPORT IS PART OF THE REPLY. A subagent finishes asynchronously and its final
+      // report lands on the parent's timeline as <task-notification>…<result>…</result> -- in the
+      // user role, so it was dropped with every other machine turn. Measured over all 556 agents on
+      // this machine: 297 (53%) report this way, 230 of those carry the FULL report, and the parent's
+      // own prose then restates a median 38% of the report's identifiers (SHAs, paths, line numbers).
+      // ~90% of agent conclusions were absent from the store. The <result> is the agent's words, on
+      // behalf of this exchange, with the human's session id -- so it joins the reply, marked.
+      const r = agentResultOf(turns[k].text);
+      if (r) reply.push(`**Agent report${r.id ? ` (task ${r.id})` : ''}:**\n${r.text}`);
+      continue;
+    }
+    break;
+  }
   const body = reply.join('\n\n').trim();
-  if (body.length < MIN_REPLY_CHARS) continue;
-  exchanges.push({ ask: turns[i].text.trim(), body, ts: turns[i].ts });
+  // A reply under the floor carries no retrievable fact, and that includes the interjection it
+  // absorbed -- but an interjection is the one place a short reply might hide a real instruction,
+  // so the loss is counted rather than silent.
+  if (body.length < MIN_REPLY_CHARS) { interjectionsInShortReplies += inter.length; continue; }
+  exchanges.push({ ask: turns[i].text.trim(), body, ts: turns[i].ts, turnIndex: i, interjections: inter });
+}
+
+// THE FULL COUNT, TAKEN BEFORE ANY FILTER TOUCHES `exchanges`. --defer-last below POPS the list; the
+// orphan pruning at the bottom needs the real number of exchanges in this transcript, and reading
+// `exchanges.length` there read the post-pop count -- so every timed run deleted each session's
+// newest memory. Reviewed 2026-09-03: 119 live files would go per timed run, 35 sessions emptied;
+// x-fb357616-0797 WAS deleted by the LaunchAgent before the review caught it (recreated by the next
+// plain run). Nothing below this line may be used as the pruning bound except this constant.
+const FULL_EXCHANGE_COUNT = exchanges.length;
+
+// ---- CONTENT-STABLE NAMES ---------------------------------------------------------------------
+//
+// `x-<sid8>-<ask timestamp, compacted: 20260903T054233800Z>`. The name is a property of the
+// EXCHANGE, not of its position. Names used to be positional (`x-<sid8>-NNNN`), and in one night
+// that cost: a withdrawn rule inserted 20 exchanges and renumbered 715 files, leaving 19 duplicate
+// memories (MEM-20/F2); a windowed run numbered from 1 and overwrote a session's first memories
+// (MEM-20/F1); a bound computed from the ordinal deleted a real file (MEM-21/#1). With the name
+// derived from WHEN THE ASK WAS MADE, inserting or dropping an exchange touches only that exchange.
+//
+// The compact form is fixed-width UTC (19 chars), so lexicographic order is time order — measured
+// against all 2,782 files at migration: zero duplicate stamps within a session, zero non-monotonic
+// pairs, i.e. the new order is byte-identical to the old positional order. 🟥 Never turn the suffix
+// into a Number: 17 digits exceed MAX_SAFE_INTEGER and adjacent milliseconds compare equal.
+//
+// NO TIMESTAMP (zero files today, but the extractor keeps such exchanges by design): a hash of the
+// ask text, prefixed with the day of the nearest earlier timestamped exchange so it sorts next to
+// its neighbours, with `Tx` where the time would be so no reader can mistake it for an instant.
+// Deterministic across re-ingests, which is what the rewrite path needs.
+//
+// COMPUTED HERE, before --defer-last pops the in-flight exchange: the pruner below treats "a file of
+// this session whose name is not in this list" as an orphan candidate, so the list must be the FULL
+// one — a first draft built it after the pop, and a timed run on a session whose in-flight ask
+// repeated an earlier one ("continue", twice) would have deleted the in-flight file as a duplicate.
+const stamp = (ts) => new Date(ts).toISOString().replace(/[-:.]/g, '');
+// The fallback hashes the ask AND the turn index: two identical asks with no timestamp ("continue",
+// twice) must not collapse into one file. Reviewed: the first version hashed the ask alone and a
+// two-exchange transcript wrote "wrote 2" into ONE file, 50% loss reported as success.
+const askKey = (ex) => createHash('sha256').update(`${ex.turnIndex}\n${String(ex.ask)}`).digest('hex').slice(0, 8);
+const names = [];
+{
+  let lastDay = '00000000';
+  for (const ex of exchanges) {
+    if (ex.ts && Number.isFinite(new Date(ex.ts).getTime())) { const s = stamp(ex.ts); lastDay = s.slice(0, 8); names.push(`x-${short}-${s}`); }
+    else names.push(`x-${short}-${lastDay}Tx${askKey(ex)}`);
+  }
+  // A name that is not unique is a file that would be silently overwritten. Refuse the whole run.
+  if (new Set(names).size !== names.length) {
+    const dup = names.find((n, i) => names.indexOf(n) !== i);
+    console.error(`REFUSING: two exchanges would share the name ${dup} (same millisecond, or same fallback key); nothing written`);
+    process.exit(5);
+  }
+  for (const n of names) if (!/^x-[^-]+-\d{8}T(\d{9}Z|x[0-9a-f]{8})$/.test(n)) { console.error(`REFUSING: name ${n} has the wrong shape; nothing written`); process.exit(5); }
 }
 
 // ---- --defer-last: the in-flight exchange waits for the next pass ----------------------------
 //
-// The pairing above makes the FINAL exchange the one with no following user turn — which mid-turn
-// is the one still being written. A timed capture drops it; a hook capture must not, because at
-// the end of a session no further user turn ever arrives and dropping it there would lose the last
+// A timed capture drops the exchange still being written; a hook capture must not, because at the
+// end of a session no further user turn ever arrives and dropping it there would lose the last
 // exchange permanently.
 //
 // Not a safety measure: the writer below overwrites whenever content differs, so a partial would
 // self-correct anyway. It avoids re-embedding a growing exchange on every interval, and avoids a
 // truncated answer being briefly searchable as though it were complete.
+//
+// 🟥 THE LAST EXCHANGE IS NOT ALWAYS THE IN-FLIGHT ONE. This block used to assume it was, and the
+// assumption fails in exactly the case the timer was built for. When Daniel interjects during a
+// long turn, his new message has no reply yet, so `body.length < MIN_REPLY_CHARS` skips it and it
+// never becomes an exchange at all — leaving the FINAL entry in `exchanges` a COMPLETE one, which
+// was then dropped as though it were in flight. Measured end-to-end: appending a user turn left the
+// store at 4 files; only appending an assistant reply as well moved it to 5. So a timed run could
+// never shorten the lag for an interjection, which is the whole scenario it targets.
+//
+// Decide it from the transcript instead: an exchange is in flight only when NO later user turn
+// exists. `turns` already excludes tool results (they carry no 'text' block, so textOf returns
+// empty), so a later entry there is a genuine user message and proves the reply has ended.
+//
+// 🟥 CORRECTION (2026-09-02, the night after). The paragraph above was written believing the desktop
+// client records an interjection as a user turn. It does not -- see INTERJECTIONS above; the message
+// is a queue-operation and is now folded into the exchange it interrupted, so it never appears in
+// `turns` and never ends a reply here. The rule below still holds, and is still needed, for the two
+// cases that DO put a later user turn in the transcript: a resumed session, and a client that writes
+// the interjection as a turn. What it does not do is what MEM-18 said it did.
 if (process.argv.includes('--defer-last') && exchanges.length) {
-  const deferred = exchanges.pop();
-  console.log(`deferring the in-flight exchange to the next pass: ${JSON.stringify(String(deferred.ask || '').slice(0, 60))}`);
+  const last = exchanges[exchanges.length - 1];
+  // A HUMAN turn ends a reply. A task notification in the user role does not -- the reply goes on
+  // past it (see the pairing loop), so counting it here would release a half-written answer.
+  const stillWriting = !turns.slice(last.turnIndex + 1).some((t) => t.role === 'user' && !isMachineTurn(t.text));
+  if (stillWriting) {
+    exchanges.pop();
+    console.log(`deferring the in-flight exchange to the next pass: ${JSON.stringify(String(last.ask || '').slice(0, 60))}`);
+  } else {
+    console.log(`final exchange is complete (a later user turn follows it); capturing it now`);
+  }
 }
 
 // ---- EXTERNAL ADDRESSES ---------------------------------------------------
@@ -253,62 +453,109 @@ const totalAttached = [...commitBuckets.values()].reduce((s, a) => s + a.length,
 const words = (s, n) => s.split(/\s+/).filter(Boolean).slice(0, n).join(' ');
 const yamlSafe = (s) => '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, ' ') + '"';
 
+// ---- CONTENT-STABLE NAMES ---------------------------------------------------------------------
+//
+// `x-<sid8>-<ask timestamp, compacted: 20260903T054233800Z>`. The name is a property of the
+// EXCHANGE, not of its position. Names used to be positional (`x-<sid8>-NNNN`), and in one night
+// that cost: a withdrawn rule inserted 20 exchanges and renumbered 715 files, leaving 19 duplicate
+// memories (MEM-20/F2); a windowed run numbered from 1 and overwrote a session's first memories
+// (MEM-20/F1); a bound computed from the ordinal deleted a real file (MEM-21/#1). With the name
+// derived from WHEN THE ASK WAS MADE, inserting or dropping an exchange touches only that exchange.
+//
+// The compact form is fixed-width UTC (19 chars), so lexicographic order is time order — measured
+// against all 2,782 files at migration: zero duplicate stamps within a session, zero non-monotonic
+// pairs, i.e. the new order is byte-identical to the old positional order. 🟥 Never turn the suffix
+// into a Number: 17 digits exceed MAX_SAFE_INTEGER and adjacent milliseconds compare equal.
+//
+// NO TIMESTAMP (zero files today, but the extractor keeps such exchanges by design): a hash of the
+// ask text, prefixed with the day of the nearest earlier timestamped exchange so it sorts next to
+// its neighbours, with `Tx` where the time would be so no reader can mistake it for an instant.
+// Deterministic across re-ingests, which is what the rewrite path needs.
+// (`names` is computed above, BEFORE --defer-last pops the in-flight exchange, so the pruner's
+//  "what a full run emits" set is complete; see FULL_EXCHANGE_COUNT.)
+
 const out = [];
-let n = 0;
-for (const ex of exchanges) {
-  if (n >= LIMIT) break;
+for (let idx = 0; idx < exchanges.length; idx++) {
+  const ex = exchanges[idx];
+  if (out.length >= LIMIT) break;
   // Older than the requested window: skip. An exchange with no timestamp is KEPT, because
   // dropping it would silently lose work whose only fault is a missing field.
   if (SINCE_MS !== null && ex.ts && new Date(ex.ts).getTime() < SINCE_MS) continue;
-  const seq = String(++n).padStart(4, '0');
   // Names are qualified by SESSION. lib/corpus.js warns on duplicate names
   // because get()/backlinks address by name and the loser is unreachable; an
   // extractor is precisely the thing that would collide without this.
-  const name = `x-${short}-${seq}`;
+  const name = names[idx];
   const desc = scrubAddresses(redact(words(ex.ask, DESC_WORDS)).text);
   const body = scrubAddresses(redact(ex.body).text);
-  const prev = n > 1 ? `x-${short}-${String(n - 1).padStart(4, '0')}` : null;
+  // The predecessor is the REAL previous exchange in the transcript, whatever filter this run is
+  // applying — a windowed run must link to the same neighbour a full run would, or the two paths
+  // write different bytes and the link skips exchanges.
+  const prev = idx > 0 ? names[idx - 1] : null;
+  const inter = (ex.interjections || []).map((t) => scrubAddresses(redact(t).text));
 
-  const fm = [
-    '---',
-    `name: ${name}`,
-    `description: ${yamlSafe(desc)}`,
-    'metadata:',
-    '  type: exchange',
-    // WHO CAPTURED THIS. Stamped at write time from the signed-in account, so
-    // every exchange from here on is attributable even though the corpus itself
-    // is shared by every account on the machine. Memories written before this
-    // stay unlabelled, and the account filter never drops unlabelled.
-    ACCOUNT ? `  account: ${ACCOUNT}` : null,
-    `  sessionId: ${sessionId}`,
-    sessionTitle ? `  sessionTitle: ${yamlSafe(sessionTitle)}` : null,
-    ex.ts ? `  ts: ${ex.ts}` : null,
-    (() => {
-      const c = commitBuckets.get(exchanges.indexOf(ex)) || [];
-      return c.length ? `  commits: ${c.slice(0, MAX_COMMITS_PER_EXCHANGE).map((x) => x.sha).join(' ')}` : null;
-    })(),
-    '---',
-    ''
-  // .filter(Boolean) also removes the trailing '' that used to provide the blank
-  // line after the closing ---, which glued the body onto the delimiter and made
-  // the parser swallow the "**Asked:**" line entirely. Terminate explicitly
-  // instead of relying on an entry that a filter can delete.
-  ].filter(Boolean).join('\n') + '\n\n';
+  // The document is a FUNCTION OF WHAT THE EXISTING FILE ALREADY CARRIES: the writer below passes
+  // the account stamp it must keep, and every metadata line some OTHER writer added (`secret: true`
+  // from the exclusion mechanism, `tier:` from a demotion, `modified:` from a fact-time stamp). A
+  // rewrite is not a capture; rebuilding the frontmatter from this fixed list alone would have
+  // silently undone all of those the next time the extractor ran -- re-indexing a memory that had
+  // been deliberately excluded. Keys this extractor owns are always regenerated; the rest ride along.
+  const mdFor = (account, extraMeta = []) => {
+    const fm = [
+      '---',
+      `name: ${name}`,
+      `description: ${yamlSafe(desc)}`,
+      'metadata:',
+      '  type: exchange',
+      // WHO CAPTURED THIS. Stamped at write time from the signed-in account, so
+      // every exchange from here on is attributable even though the corpus itself
+      // is shared by every account on the machine. Memories written before this
+      // stay unlabelled, and the account filter never drops unlabelled.
+      account ? `  account: ${account}` : null,
+      `  sessionId: ${sessionId}`,
+      sessionTitle ? `  sessionTitle: ${yamlSafe(sessionTitle)}` : null,
+      ex.ts ? `  ts: ${ex.ts}` : null,
+      inter.length ? `  interjections: ${inter.length}` : null,
+      (() => {
+        const c = commitBuckets.get(exchanges.indexOf(ex)) || [];
+        return c.length ? `  commits: ${c.slice(0, MAX_COMMITS_PER_EXCHANGE).map((x) => x.sha).join(' ')}` : null;
+      })(),
+      ...extraMeta,
+      '---',
+      ''
+    // .filter(Boolean) also removes the trailing '' that used to provide the blank
+    // line after the closing ---, which glued the body onto the delimiter and made
+    // the parser swallow the "**Asked:**" line entirely. Terminate explicitly
+    // instead of relying on an entry that a filter can delete.
+    ].filter(Boolean).join('\n') + '\n\n';
 
-  const ask = scrubAddresses(redact(ex.ask).text);
-  const cmts = (commitBuckets.get(exchanges.indexOf(ex)) || []).slice(0, MAX_COMMITS_PER_EXCHANGE);
-  const commitBlock = cmts.length
-    ? '\n**Commits during this exchange:**\n'
-      + cmts.map((c) => `- \`${c.sha}\` (${c.repo}) ${scrubAddresses(redact(c.subject || '').text)}`).join('\n')
-      + '\n'
-    : '';
-  const md = `${fm}**Asked:** ${ask}\n\n${body}\n${commitBlock}${prev ? `\nPrevious: [[${prev}]]\n` : ''}`;
-  out.push({ name, file: `${name}.md`, md, descLen: desc.length, bodyLen: body.length });
+    const ask = scrubAddresses(redact(ex.ask).text);
+    // One block-quote per interjection, in the order typed, INSIDE THE ASK PARAGRAPH (single
+    // newlines, no blank line before the reply). Two consumers depend on that shape:
+    //   * scripts/dream.js `assistantHalf()` takes everything after the first blank line following
+    //     **Asked:** as the assistant's words. A first draft put the interjections in their own
+    //     paragraph, and a user's "two things I got wrong" was scored as MY correction -- the exact
+    //     false positive that function exists to prevent.
+    //   * a multi-line interjection used to carry the marker on its first line only, so a reader
+    //     could not tell where the user's words stopped, and a typed "# heading" became a real
+    //     heading in `get outline`. Every continuation line now carries the quote prefix.
+    const added = inter.map((t) => '\n> **Added mid-reply:** ' + t.split('\n').map((l) => l.trimEnd()).join('\n> ')).join('');
+    const cmts = (commitBuckets.get(exchanges.indexOf(ex)) || []).slice(0, MAX_COMMITS_PER_EXCHANGE);
+    const commitBlock = cmts.length
+      ? '\n**Commits during this exchange:**\n'
+        + cmts.map((c) => `- \`${c.sha}\` (${c.repo}) ${scrubAddresses(redact(c.subject || '').text)}`).join('\n')
+        + '\n'
+      : '';
+    return `${fm}**Asked:** ${ask}${added}\n\n${body}\n${commitBlock}${prev ? `\nPrevious: [[${prev}]]\n` : ''}`;
+  };
+  out.push({ name, file: `${name}.md`, mdFor, md: mdFor(ACCOUNT), descLen: desc.length, bodyLen: body.length, interjections: inter.length });
 }
 
 console.log(`transcript : ${file}`);
 console.log(`turns      : ${turns.length}   exchanges kept: ${exchanges.length}   emitted: ${out.length}`);
 console.log(`skipped    : replies under ${MIN_REPLY_CHARS} chars, machine turns, tool traffic, thinking blocks`);
+console.log(`interjected: ${out.reduce((s, o) => s + o.interjections, 0)} mid-turn message(s) folded into ${out.filter((o) => o.interjections).length} exchange(s)`
+  + (interjectionsUnattached ? `; ${interjectionsUnattached} typed before any human turn and NOT kept` : '')
+  + (interjectionsInShortReplies ? `; ${interjectionsInShortReplies} fell in replies under ${MIN_REPLY_CHARS} chars and were NOT kept` : ''));
 console.log(`commits    : ${totalAttached} attached across ${commitBuckets.size} exchange(s)`
   + (configuredRepos().length ? ` from ${configuredRepos().length} repo(s)` : '  (MEMORY_GIT_REPOS unset -- join disabled)'));
 if (out.length) {
@@ -323,12 +570,95 @@ if (!WRITE) { console.log('\nDRY RUN — pass --write to emit into the own store
 const dir = ownStoreDir();
 if (!dir) { console.error('own store disabled (MEMORY_OWN_STORE=0)'); process.exit(1); }
 mkdirSync(dir, { recursive: true });
-let wrote = 0, unchanged = 0;
+// THE ACCOUNT STAMP SURVIVES A REWRITE. It records who was signed in when the exchange was
+// CAPTURED; a later rewrite (an extractor change re-applied to history) is not a capture. Measured
+// before this existed: 5 of the 14 sessions touched by the interjection fix carry the other
+// account's stamp -- 182 files that a plain re-ingest would have silently flipped to whoever ran it.
+// A file with NO stamp keeps having none, for the same reason.
+const headOf = (raw) => raw.slice(0, raw.indexOf('\n---', 4) + 1 || 4000);
+const stampOf = (raw) => {
+  const m = /^  account: (.+)$/m.exec(headOf(raw));
+  return m ? m[1].trim() : null;
+};
+// Metadata lines this extractor does NOT own, carried across a rewrite verbatim (see mdFor).
+const OWN_META = new Set(['type', 'account', 'sessionId', 'sessionTitle', 'ts', 'interjections', 'commits']);
+const extraMetaOf = (raw) => {
+  const lines = headOf(raw).split('\n');
+  const start = lines.findIndex((l) => /^metadata\s*:/.test(l));
+  if (start === -1) return [];
+  const out = [];
+  for (const l of lines.slice(start + 1)) {
+    if (!/^  \S/.test(l)) break;                          // end of the metadata block
+    const key = (/^  ([^:]+):/.exec(l) || [])[1];
+    if (key && !OWN_META.has(key.trim())) out.push(l);
+  }
+  return out;
+};
+const sessionOf = (raw) => (/^  sessionId: (\S+)$/m.exec(raw.slice(0, raw.indexOf('\n---', 4) + 1 || 4000)) || [])[1] || null;
+let wrote = 0, unchanged = 0, skippedNew = 0, foreign = 0;
 for (const o of out) {
   const p = join(dir, o.file);
-  if (existsSync(p) && readFileSync(p, 'utf8') === o.md) { unchanged++; continue; }
-  writeFileSync(p, o.md, 'utf8');
+  const existing = existsSync(p) ? readFileSync(p, 'utf8') : null;
+  if (existing === null && REWRITE_ONLY) { skippedNew++; continue; }
+  // The 8-char prefix is 32 bits. No collision among 111 sessions today; when one happens the loser
+  // must not be silently overwritten by the winner. Refuse and say so.
+  if (existing !== null) {
+    const owner = sessionOf(existing);
+    if (owner && owner !== sessionId) { foreign++; console.error(`REFUSED ${o.file}: held by session ${owner}, not ${sessionId} (prefix collision)`); continue; }
+  }
+  const md = existing === null ? o.md : o.mdFor(stampOf(existing), extraMetaOf(existing));
+  if (existing === md) { unchanged++; continue; }
+  writeFileSync(p, md, 'utf8');
   wrote++;
 }
-console.log(`\nwrote ${wrote}, unchanged ${unchanged}, into ${dir}`);
+// ORPHANS. Names are positional, so when an earlier run emitted MORE exchanges than this transcript
+// now yields, the files beyond the current count are a stale tail: each holds a copy of an exchange
+// that now lives under a lower number. Measured live 2026-09-03: a withdrawn extractor rule inserted
+// 20 exchanges into one session, was withdrawn, and left 19 duplicate memories at 0796-0814 --
+// indexed, retrievable, and indistinguishable from real ones.
+//
+// THIS IS THE ONLY CODE IN THE PROJECT THAT DELETES A MEMORY FILE, in a directory git does not
+// track, so it needs more than arithmetic:
+//   * the bound is FULL_EXCHANGE_COUNT, taken before --defer-last pops the list (the first version
+//     used the post-pop length and deleted a real exchange on the very next timed run);
+//   * only a PLAIN full run prunes -- not --rewrite-only (whose contract is "touch nothing new"),
+//     not --limit, not --since-minutes;
+//   * a candidate must be POSITIVE EVIDENCE of a stale tail: its description must match a
+//     lower-numbered file of this same session. A file beyond the count that matches nothing is
+//     reported, not deleted -- it may be an exchange an older rule saw and this one does not.
+// With content-stable names the question is no longer "beyond which ordinal" but a SET DIFFERENCE:
+// this session's files whose name a full run would NOT emit. That set is empty in the steady state
+// and non-empty exactly when an exchange stopped existing under the current rules -- or was written
+// under a rule since withdrawn. The bound is the FULL name set (taken before --defer-last pops), so a
+// deferred exchange's existing file is never a candidate. MEMORY_PRUNE_ORPHANS=0 turns it off.
+let removed = 0, unexplained = 0;
+const PRUNE = WRITE && !REWRITE_ONLY && LIMIT === Infinity && SINCE_MS === null && FULL_EXCHANGE_COUNT > 0
+  && process.env.MEMORY_PRUNE_ORPHANS !== '0';
+if (PRUNE) {
+  // THE EVIDENCE IS BODY IDENTITY, NOT THE DESCRIPTION. A first version accepted a matching
+  // description (the first 40 words of the ask) as proof of a stale copy. Reviewed: 144 live files in
+  // 23 sessions share a description with a sibling -- "continue" x15, "Dom reloaded" x8 -- so any of
+  // them would have been deleted on sight the moment its name stopped being emitted, unique body and
+  // all. A stale tail is a COPY: same body under an old name. Same description, different body, is a
+  // real memory and goes down the KEPT path.
+  const bodyHashOf = (raw) => {
+    const i = raw.indexOf('\n---', 4);
+    const body = (i === -1 ? raw : raw.slice(i + 4)).replace(/\nPrevious: \[\[[^\]]+\]\]\n?$/, '').trim();
+    return createHash('sha256').update(body).digest('hex');
+  };
+  const emitted = new Set(names.map((n) => `${n}.md`));
+  const ownBodies = new Set();     // body hashes of this session's REAL (emitted) files
+  for (const f of emitted) { if (existsSync(join(dir, f))) ownBodies.add(bodyHashOf(readFileSync(join(dir, f), 'utf8'))); }
+  for (const f of readdirSync(dir)) {
+    if (!f.startsWith(`x-${short}-`) || !f.endsWith('.md') || emitted.has(f)) continue;
+    const raw = readFileSync(join(dir, f), 'utf8');
+    if (sessionOf(raw) !== sessionId) continue;
+    if (ownBodies.has(bodyHashOf(raw))) { unlinkSync(join(dir, f)); removed++; }
+    else { unexplained++; console.error(`KEPT ${f}: not an exchange this transcript yields, and its body matches none of the ${emitted.size} it does; not deleted`); }
+  }
+}
+console.log(`\nwrote ${wrote}, unchanged ${unchanged}${REWRITE_ONLY ? `, not created ${skippedNew} (--rewrite-only)` : ''}`
+  + `${foreign ? `, refused ${foreign} (prefix collision)` : ''}`
+  + `${removed ? `, removed ${removed} duplicate orphan(s) (not among the ${FULL_EXCHANGE_COUNT} exchanges)` : ''}`
+  + `${unexplained ? `, kept ${unexplained} unexplained file(s) not among the ${FULL_EXCHANGE_COUNT} exchanges` : ''}, into ${dir}`);
 console.log(`store now holds ${readdirSync(dir).filter((f) => f.endsWith('.md')).length} files`);

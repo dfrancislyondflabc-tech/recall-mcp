@@ -24,15 +24,62 @@
 
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync, unlinkSync, readFileSync, appendFileSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { ownStoreDir, stagingIndexPath, memoryRoots, rootsForCorpus } from '../lib/config.js';
-import { localConfig } from '../lib/local-config.js';
-import { connectorRecentlyOn } from '../lib/heartbeat.js';
-import { buildIndex } from '../lib/index-store.js';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+// ---- THE LOG IS ARMED BEFORE ANYTHING THAT CAN THROW ------------------------------------------
+//
+// Reviewed 2026-09-03 (MEM-20/F7): a throw during the lib imports, or in homedir() at module level
+// (seen: ENOBUFS from an oversized HOME), exited non-zero having written NOTHING -- and the hook host
+// discards stderr, so the run left no trace at all. The log path is therefore resolved here, from the
+// environment alone, and the exit handler registered, BEFORE the libraries are imported. The imports
+// are dynamic and guarded so an import failure is a logged `failed`, not silence. If lib/config.js
+// later resolves a different store, the path is switched then.
+const TIMED = process.argv.includes('--timed') || process.env.MEMORY_INGEST_TIMED === '1';
+let RUN_LOG = process.env.MEMORY_INGEST_LOG
+  || join(process.env.MEMORY_OWN_STORE || join(process.env.MEMORY_ROOT || ROOT, 'store'), '.ingest-runs.jsonl');
+const RUN_LOG_MAX = Number(process.env.MEMORY_INGEST_LOG_MAX_BYTES ?? 2 * 1024 * 1024);
+let runLogged = false;
+let sessionForLog = null;
+function runLog(outcome, extra = {}) {
+  // `started` is the one line allowed BEFORE the terminal one: a run killed mid-way (the walker's
+  // 10-minute SIGTERM, a host quitting) then leaves `started` with no `captured`/`no-op`/`failed`
+  // after it, which is the crash signature the next reader can look for.
+  if (outcome !== 'started') {
+    if (runLogged) return;              // one terminal line per run, whichever exit is reached first
+    runLogged = true;
+  }
+  if (!RUN_LOG) return;
+  try {
+    try { if (statSync(RUN_LOG).size > RUN_LOG_MAX) renameSync(RUN_LOG, RUN_LOG + '.1'); } catch (_) { /* first run */ }
+    try { mkdirSync(dirname(RUN_LOG), { recursive: true }); } catch (_) { /* exists */ }
+    appendFileSync(RUN_LOG, JSON.stringify({
+      at: new Date().toISOString(),
+      trigger: TIMED ? 'timed' : 'hook',
+      outcome,
+      pid: process.pid,
+      ...(sessionForLog ? { session: sessionForLog } : {}),
+      ...extra
+    }) + '\n', 'utf8');
+  } catch (_) { /* a log that cannot be written must never fail an ingest */ }
+}
+process.on('exit', () => runLog('exited', {}));
+
+let ownStoreDir, stagingIndexPath, memoryRoots, rootsForCorpus, localConfig, connectorRecentlyOn, buildIndex, homedir;
+try {
+  ({ homedir } = await import('node:os'));
+  ({ ownStoreDir, stagingIndexPath, memoryRoots, rootsForCorpus } = await import('../lib/config.js'));
+  ({ localConfig } = await import('../lib/local-config.js'));
+  ({ connectorRecentlyOn } = await import('../lib/heartbeat.js'));
+  ({ buildIndex } = await import('../lib/index-store.js'));
+  if (!process.env.MEMORY_INGEST_LOG && ownStoreDir()) RUN_LOG = join(ownStoreDir(), '.ingest-runs.jsonl');
+} catch (e) {
+  console.error('[auto-ingest] FAILED before start:', e.message);
+  runLog('failed', { error: 'startup: ' + String(e.message).slice(0, 280) });
+  process.exit(1);
+}
 // EVERY project directory, not one. Claude keeps a transcript folder per
 // project, so a hook hard-wired to a single folder silently ignores sessions
 // from any other project — and then its "most recent" fallback re-scans an
@@ -63,7 +110,7 @@ const projectDirs = () => {
 //
 // 🟥 The hook must NOT defer. Dropping the last exchange there would lose the final exchange of
 // every session, since no further user turn ever arrives.
-const TIMED = process.argv.includes('--timed') || process.env.MEMORY_INGEST_TIMED === '1';
+// (TIMED is defined above, before the log is armed.)
 
 const log = (...a) => console.error('[auto-ingest]', ...a);
 
@@ -76,27 +123,10 @@ const log = (...a) => console.error('[auto-ingest]', ...a);
 //
 // Every field is an OUTCOME, not a narration: a reader wants to know what happened, not what the
 // script was thinking. `why` is present exactly when nothing was written.
-const RUN_LOG = process.env.MEMORY_INGEST_LOG
-  || (ownStoreDir() ? join(ownStoreDir(), '.ingest-runs.jsonl') : null);
-const RUN_LOG_MAX = Number(process.env.MEMORY_INGEST_LOG_MAX_BYTES ?? 2 * 1024 * 1024);
-let runLogged = false;
-function runLog(outcome, extra = {}) {
-  if (runLogged) return;              // one line per run, whichever exit is reached first
-  runLogged = true;
-  if (!RUN_LOG) return;
-  try {
-    // Roll rather than grow without bound — the same discipline as the query log.
-    try { if (statSync(RUN_LOG).size > RUN_LOG_MAX) renameSync(RUN_LOG, RUN_LOG + '.1'); } catch (_) { /* first run */ }
-    appendFileSync(RUN_LOG, JSON.stringify({
-      at: new Date().toISOString(),
-      trigger: TIMED ? 'timed' : 'hook',
-      outcome,
-      pid: process.pid,
-      ...extra
-    }) + '\n', 'utf8');
-  } catch (_) { /* a log that cannot be written must never fail an ingest */ }
-}
-process.on('exit', () => runLog('exited', {}));
+// (RUN_LOG, runLog() and the exit handler are defined at the top of the file, BEFORE the library
+// imports, so that a failure during startup still leaves a line. `session` is set on every line once
+// the transcript is resolved: the walker fires one run per active session and three are usually
+// live, so a line without it could not be attributed to a conversation.)
 
 /** A session id resolves to its own transcript wherever it lives. */
 function resolveTranscript(arg) {
@@ -177,6 +207,48 @@ if (!CAPTURE_ALWAYS) {
 const transcript = resolveTranscript(process.argv[2] || sessionIdFromStdin());
 if (!transcript || !existsSync(transcript)) { log('no transcript; nothing to do'); runLog('skipped', { why: 'no transcript' }); process.exit(0); }
 
+/**
+ * A scheduled task is a robot run, not a conversation, and must not become memory.
+ *
+ * 🟥 FOUND 2026-09-03, and it is a defect the TIMER introduces, not a pre-existing one. Four of the
+ * 31 sessions active in the last 72 hours had never been captured; all four turned out to be the
+ * same scheduled task (`bh-ds925-price-log`), which evidently does not fire the Stop hook. The
+ * timer walks every recently-touched transcript instead of the one that just stopped, so it would
+ * reach them where the hook never did.
+ *
+ * Measured rather than assumed, because the first version of this comment overstated it: run with
+ * MEMORY_CAPTURE_INCLUDE_TASKS=1, three of the four produce nothing (the extractor's own reply-
+ * length rules already decline them) and ONE produces a memory whose description is the raw
+ * `<scheduled-task name="bh-ds925-price-log" file="...">` XML. So this guard prevents 1 junk
+ * document in 4 sessions, not 4 — small, but it is corpus poisoning, and it recurs on every run.
+ *
+ * Detection is the first user turn: the client wraps these as `<scheduled-task name="...">`.
+ * Reading only the head of the file keeps this cheap on a multi-megabyte transcript.
+ *
+ * Opt in with MEMORY_CAPTURE_INCLUDE_TASKS=1 if a scheduled task should ever be remembered.
+ */
+function isScheduledTask(path) {
+  if (process.env.MEMORY_CAPTURE_INCLUDE_TASKS === '1') return false;
+  let head;
+  try { head = readFileSync(path, 'utf8').slice(0, 64 * 1024); } catch { return false; }
+  for (const line of head.split('\n')) {
+    if (!line) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }   // a truncated tail line is not fatal
+    if (o.type !== 'user') continue;
+    const c = o.message && o.message.content;
+    const text = typeof c === 'string' ? c
+      : Array.isArray(c) ? (c.find((b) => b && b.type === 'text') || {}).text || '' : '';
+    return /^\s*<scheduled-task\b/.test(text);   // decided by the FIRST user turn, then stop
+  }
+  return false;
+}
+
+if (isScheduledTask(transcript)) {
+  log('scheduled-task session; not a conversation, nothing to remember');
+  runLog('skipped', { why: 'scheduled-task session' });
+  process.exit(0);
+}
+
 const store = ownStoreDir();
 const stagingIdx = stagingIndexPath();
 if (!store || !stagingIdx) { log('staging disabled; nothing to do'); process.exit(0); }
@@ -191,6 +263,7 @@ mkdirSync(store, { recursive: true });
 // the common case to a stat() and an early exit.
 // Override with MEMORY_INGEST_DEBOUNCE_SEC; 0 disables.
 const DEBOUNCE_SEC = Number(process.env.MEMORY_INGEST_DEBOUNCE_SEC ?? 600);
+sessionForLog = String(transcript).replace(/^.*[\\/]/, '').replace(/\.jsonl$/, '');
 const stampFile = join(store, '.last-ingest.json');
 const readStamps = () => { try { return JSON.parse(readFileSync(stampFile, 'utf8')); } catch { return {}; } };
 const stamps = readStamps();
@@ -224,9 +297,14 @@ const processAlive = (pid) => {
 };
 
 const lock = join(store, '.auto-ingest.lock');
-if (existsSync(lock)) {
-  const age = (Date.now() - statSync(lock).mtimeMs) / 1000;
-  let holder = NaN;
+// ATOMIC, OR IT IS NOT A LOCK. `existsSync` then `writeFileSync` is a check-then-act gap: measured
+// with a hook and a timed run started together, 20 trials -- both proceeded 8 times, and 6 of those
+// left the index one document short of the store while BOTH log lines said "captured". `wx` makes
+// creation the test; the liveness check runs only when creation fails.
+const tryLock = () => { try { writeFileSync(lock, String(process.pid), { flag: 'wx' }); return true; } catch (e) { if (e.code === 'EEXIST') return false; throw e; } };
+if (!tryLock()) {
+  let age = 0, holder = NaN;
+  try { age = (Date.now() - statSync(lock).mtimeMs) / 1000; } catch (_) { /* vanished between the two calls */ }
   try { holder = parseInt(readFileSync(lock, 'utf8').trim(), 10); } catch (_) { /* unreadable = treat as dead */ }
   if (processAlive(holder)) {
     log(`another run (pid ${holder}) holds the lock; exiting`);
@@ -234,29 +312,51 @@ if (existsSync(lock)) {
     process.exit(0);
   }
   log(`lock held by dead pid ${holder || '?'} (${age.toFixed(0)}s old); taking it`);
+  try { unlinkSync(lock); } catch (_) { /* someone else already cleared it */ }
+  if (!tryLock()) {                     // lost the race to another run that saw the same dead pid
+    log('lock taken by another run while clearing a dead one; exiting');
+    runLog('skipped', { why: 'lock raced' });
+    process.exit(0);
+  }
 }
-writeFileSync(lock, String(process.pid));
+
+// THE DEBOUNCE STAMP RECORDS THE SIZE THE EXTRACTOR READ, not the size when it finished. Stamping
+// afterwards recorded anything appended DURING the run as already captured: reproduced -- an exchange
+// appended 1.5 s into a 5 s run was in no store file, and the next two runs said "transcript
+// unchanged". Read the size here, before the extractor does, and stamp exactly that.
+let sizeAtStart = 0; try { sizeAtStart = statSync(transcript).size; } catch (_) { /* ignore */ }
+let failed = false;
+// A `started` line with no terminal line after it is the signature of a run that was killed.
+runLog('started', { transcriptBytes: sizeAtStart });
 
 try {
   const before = existsSync(store) ? readdirSync(store).filter((f) => f.endsWith('.md')).length : 0;
 
   // --defer-last is what makes a timed run provisional: the in-flight exchange waits for the
   // next pass rather than being written and re-embedded on every interval.
-  execFileSync(process.execPath, [join(ROOT, 'scripts/ingest-transcript.js'), transcript, '--write',
+  const stdout = execFileSync(process.execPath, [join(ROOT, 'scripts/ingest-transcript.js'), transcript, '--write',
     ...(TIMED ? ['--defer-last'] : [])],
-    { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+    { stdio: ['ignore', 'pipe', 'pipe'], env: process.env }).toString();
 
   // NO process.exit() INSIDE THIS TRY. process.exit() does not run `finally`,
   // so the early return for "nothing new" leaked the lock on every quiet run --
   // which is the COMMON case. The next run then found a lock held by a dead pid;
   // the liveness check above recovers from that, so the two defects masked each
   // other and only a fixture that asserted the lock was CLEARED could see it.
+  //
+  // A REWRITE COUNTS. This used to compare file COUNTS only, so an existing exchange whose content
+  // changed -- the extractor learned to see something it had missed (1.5.1: mid-turn messages), or
+  // an exchange was captured provisionally and then completed -- left the index describing the OLD
+  // text until some later capture happened to add a file. The extractor reports what it wrote;
+  // read that instead of inferring it from a count that cannot see a rewrite.
   const after = readdirSync(store).filter((f) => f.endsWith('.md')).length;
-  if (after === before) {
+  const wrote = parseInt((/^wrote (\d+),/m.exec(stdout) || [])[1] || '0', 10);
+  if (after === before && wrote === 0) {
     log(`no new exchanges (${after} in store); index untouched`);
     runLog('no-op', { why: 'no new exchanges', storeFiles: after });
   } else {
-    log(`${after - before} new exchange(s); refreshing staging index`);
+    const rewritten = Math.max(0, wrote - (after - before));
+    log(`${after - before} new exchange(s)${rewritten ? `, ${rewritten} rewritten` : ''}; refreshing staging index`);
     // rootsForCorpus, NOT !primary. There are three corpora now, and the
     // handoff roots are also non-primary — `!primary` would have quietly
     // written the handoff documents into the staging index, which is the exact
@@ -264,18 +364,23 @@ try {
     const staging = rootsForCorpus('staging');
     const report = await buildIndex({ dir: staging, out: stagingIdx });
     log(`staging index: ${report.fileCount ?? after} docs, ${report.chunks ?? '?'} chunks`);
-    runLog('captured', { newExchanges: after - before, storeFiles: after,
+    runLog('captured', { newExchanges: after - before, ...(rewritten ? { rewritten } : {}), storeFiles: after,
       indexedDocs: report.fileCount ?? after, indexedChunks: report.chunks ?? null });
   }
 } catch (e) {
+  failed = true;
   log('FAILED:', e.message);
   runLog('failed', { error: String(e.message).slice(0, 300) });
   process.exitCode = 1;
 } finally {
-  try {
-    let size = 0; try { size = statSync(transcript).size; } catch (_) { /* ignore */ }
-    stamps[txKey] = { at: Date.now(), size };
-    writeFileSync(stampFile, JSON.stringify(stamps, null, 2) + '\n', 'utf8');
-  } catch (_) { /* a missing stamp only costs a redundant run */ }
-  try { unlinkSync(lock); } catch (_) { /* best effort */ }
+  // No stamp after a failure: a stamp says "this size was captured", and it was not. Without this
+  // a failed ingest followed by no further growth was a permanent skip after one `failed` line.
+  if (!failed) {
+    try {
+      stamps[txKey] = { at: Date.now(), size: sizeAtStart };
+      writeFileSync(stampFile, JSON.stringify(stamps, null, 2) + '\n', 'utf8');
+    } catch (_) { /* a missing stamp only costs a redundant run */ }
+  }
+  // Release only OUR lock. An unconditional unlink removed whichever run held it.
+  try { if (parseInt(readFileSync(lock, 'utf8').trim(), 10) === process.pid) unlinkSync(lock); } catch (_) { /* best effort */ }
 }

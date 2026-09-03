@@ -18,7 +18,8 @@
 // Silent and non-fatal by design: it runs on every memory write, and a stamping
 // failure must never be able to lose the memory itself.
 
-import { readFileSync, writeFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { rewriteFrontmatterOnly } from '../lib/safe-write.js';
 import { basename } from 'node:path';
 import { accountLabel } from '../lib/config.js';
 import { redact } from '../lib/secrets.js';
@@ -169,4 +170,9 @@ if (s.startsWith('---')) {
 } else {
   out = `---\nname: ${name}\nmetadata:\n${block}\n---\n\n${s}`;
 }
-try { writeFileSync(file, out, 'utf8'); console.error(`[stamp] ${name} -> ${want.map(([k]) => k).join(', ')}`); } catch { /* never fail a write */ }
+// Through the guarded writer: body-identical or refused, snapshot first, atomic, and inert under
+// MEMORY_CURATED_READ_ONLY=1 (this is the one writer that fires on EVERY Write/Edit of a memory file).
+try {
+  const w = rewriteFrontmatterOnly(file, out, { allowNewFrontmatter: true });
+  console.error(w.written ? `[stamp] ${name} -> ${want.map(([k]) => k).join(', ')}` : `[stamp] ${name} not written: ${w.refused}`);
+} catch { /* never fail a write */ }

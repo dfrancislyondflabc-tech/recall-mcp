@@ -79,3 +79,12 @@ local-config.json
 # Measurement before-images (scripts/measure-vector-fidelity.js). Same content class as the index
 # and the query log: they mirror corpus text, so they never reach a remote.
 .baseline/
+
+# The RELEASED capture copy the hooks and LaunchAgent run (scripts/release-capture.sh). Derived from
+# committed code, machine-local, regenerable. Never to a remote. (dist/ itself holds install docs that SHIP.)
+dist/capture/
+dist/.capture-staging.*
+
+# Snapshots taken before any frontmatter edit (lib/safe-write.js). Regenerable, machine-local,
+# and the suite creates them inside test fixtures when it exercises setTier/setModified.
+.memory-snapshots/

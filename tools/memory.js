@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { readFileSync, statSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { writeNewMemoryFile } from '../lib/safe-write.js';
 import { join, basename, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -499,7 +500,11 @@ function doImport(args) {
         it.sourcePath ? `  sourcePath: ${JSON.stringify(it.sourcePath)}` : null,
         it.when ? `  originalDate: ${it.when}` : null,
         args.domain ? `  domain: ${args.domain}` : null, '---'].filter(Boolean).join('\n');
-      writeFileSync(file, `${fm}\n\n# ${it.title}\n\n${text}\n`, 'utf8');
+      // A NEW file, never an overwrite; inert under MEMORY_CURATED_READ_ONLY=1. (The exists() check
+      // above already skips a name that is taken; this makes the writer itself refuse as well.)
+      const supersededTo = (replaced.find((r) => r.name === name) || {}).movedTo || null;
+      const nw = writeNewMemoryFile(file, `${fm}\n\n# ${it.title}\n\n${text}\n`, { supersededTo });
+      if (!nw.written) { skipped.push({ title: it.title, reason: nw.refused }); continue; }
       // PHASE 4b -- KEY FACTS, if the caller wrote any. A sidecar beside the
       // document, keyed by SECTION name, because a book is one file holding
       // sixty-one sections and the frontmatter parser is line-based by

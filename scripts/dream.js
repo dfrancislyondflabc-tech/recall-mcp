@@ -331,7 +331,15 @@ function assistantHalf(body) {
 const CONFIRMS_MEMORY_RE = /\b(the )?memor(y|ies)( note| file)? (says|said|does record|records|has|is right|was right)\b|\bmemory does record\b/i;
 const PREAMBLE_RE = /\b(let me (check|verify|look|re-?read|confirm)|before I answer|i'll check|going to check)\b/i;
 
-const SUPERSESSION_MODE = (process.env.DREAM_SUPERSESSION || 'on').toLowerCase();
+// 🟥 DEFAULT MOVED 'on' -> 'shadow' (2026-09-03). The queued arm's precision is measured at 0/6 over
+// its whole life: of the six candidates that ever survived containment, three named memories that
+// had ALREADY been corrected and three named memories that never contained the claim (MEM-8, re-
+// confirmed over 27 unique candidates / 15 days; 4 new candidates in the last 9 days, 0 queued). The
+// standing rule for a judgment feature is precision <50% ⇒ do not act on it, so it computes and logs
+// and no longer puts work in front of a human. Containment itself is sound — 21/21 rejections
+// spot-check correct — so the evidence keeps accruing for the third condition MEM-8 asks for:
+// before queueing, check whether the target STILL asserts the superseded version.
+const SUPERSESSION_MODE = (process.env.DREAM_SUPERSESSION || 'shadow').toLowerCase();
 
 // THE TEST THAT WAS MISSING. A supersession requires the older memory to ACTUALLY
 // ASSERT the thing that got corrected. Similarity cannot show that; term

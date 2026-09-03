@@ -4,10 +4,31 @@
 //   node scripts/timed-capture.mjs [--window-min N] [--dry]
 //
 // WHY THIS EXISTS. Capture fires on the Stop hook, so its unit is a TURN — the whole run of work
-// between two user messages. Measured in one real session: ten exchanges written in the same
-// second, then a 283-minute gap with nothing captured at all. The data was never missing; the
-// transcript is written continuously (verified live, 17,222,315 -> 17,233,511 bytes in 28 seconds,
-// with capture 2.0 minutes behind at that moment). Only the trigger waited.
+// between two user messages. An exchange is written only once its turn ends, so capture lag equals
+// turn length. Measured on this session: 1, 1, 1, 2, 10, 37, 41 and 57 minutes.
+//
+// 🟥 A CORRECTION — this file previously carried the wrong reason, twice over.
+// It first said "ten exchanges written in the same second, then a 283-minute gap", read as
+// accumulation during one long turn. I later told Daniel it was ten turns whose hook never fired.
+// BOTH are wrong. What the store shows (store/x-b58a69af-*.md, file mtime vs frontmatter `ts`):
+//   - the burst was 52 exchanges, not ten, and their ask-times span FIVE DAYS (2026-08-28 →
+//     2026-09-02). It was the first-ever ingest of a session that had run uncaptured for days.
+//   - the 283-minute "gap" was 20:34 → 01:24 between two of Daniel's messages. No user turn means
+//     no exchange. Nothing was missed, because there was nothing to capture.
+// The hook is not failing: the run log holds 27 hook runs — 3 captured, 24 honest "no new
+// exchanges".
+//
+// THE REAL GAP, measured across every session active in the last 72 hours: 4 of 31 had never been
+// captured (all four scheduled tasks — see the guard in auto-ingest.js), and several show a last
+// capture days older than their transcript, having been resumed since. A per-turn hook cannot reach
+// a session that is resumed and closed without it firing, because it only ever runs for the session
+// that just stopped. Walking every recently-touched transcript is what does.
+//
+// Sized honestly, against a control: a session captured live start-to-finish captures 59 of 77
+// prose user turns; the "7 days behind" session captures 45 of 59 — the SAME 1.3x ratio. So the
+// shortfall is single digits per session, not the ~1,559 exchanges I first computed by counting raw
+// `type:"user"` entries (tool results carry that type too). Real, worth closing, NOT an emergency,
+// and explicitly not grounds for a backfill pass.
 //
 // So: run on a timer as well, and let auto-ingest do exactly what it already does — with `--timed`,
 // which defers the in-flight exchange. See test/timed-capture-preregistration.md.

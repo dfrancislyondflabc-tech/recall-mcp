@@ -333,7 +333,7 @@ term-filter away.
 ```
 memory({action: "latest", query: "reparse"})
   -> orderedBy: "ts", totalMentions: 16, scopeHint: {scope: "staging", explicit: false}
-     results[0]: x-fb357616-0650   threadPosition: "650 of 650"   laterInThread: 0
+     results[0]: x-fb357616-20260903T235959000Z   threadPosition: "650 of 650"   laterInThread: 0
 ```
 
 **Fields worth reading**
@@ -386,14 +386,14 @@ commits landed after it. When the answer matters, check the world.
 wrong end of a long one: the resolution to a claim at exchange 200 of a 650-exchange thread is at
 201–210. Relevance can't bridge that gap either — the exchange that *resolves* something often
 shares almost no vocabulary with the one that raised it ("done", "shipped", "you were right").
-Sequence can, and sequence is already in the `x-<session>-NNNN` names, so this is arithmetic, not
+Sequence can, and sequence is already in the `x-<session>-<ask timestamp>` names (e.g. `x-fb357616-20260903T054233800Z`, which sort as time), so this is arithmetic, not
 retrieval.
 
 ```
-memory({action: "thread", name: "x-fb357616-0616", forward: 4, back: 1})
-  ->  -1  x-fb357616-0615
-      ▶0  x-fb357616-0616   <- the anchor
-      +1  x-fb357616-0617 …          remainingAfter: 30, threadLast: x-fb357616-0650
+memory({action: "thread", name: "x-fb357616-20260903T054233800Z", forward: 4, back: 1})
+  ->  -1  x-fb357616-20260903T053810112Z
+      ▶0  x-fb357616-20260903T054233800Z   <- the anchor
+      +1  x-fb357616-20260903T060102450Z …          remainingAfter: 30, threadLast: x-fb357616-20260903T235959000Z
 ```
 
 `offset` is relative to the anchor. `remainingAfter` says how much of the thread the window did
@@ -408,7 +408,7 @@ naming one specific saved change — either exists, landed on the mainline, on a
 files, or it does not.
 
 ```
-memory({action: "verify", name: "x-df6d25fe-0028"})
+memory({action: "verify", name: "x-df6d25fe-20260818T214812690Z"})
   -> c509e0f [recall-mcp] 2026-08-18  ON MAINLINE  "dream + auto-ingest: a correction signal…"  2 files
      3c1a440 [recall-mcp] 2026-08-18  ON MAINLINE  "auto-ingest: the debounce must run BEFORE the lock"  2 files
 ```
@@ -897,6 +897,48 @@ unrestricted draft produced 1,660 proposals over 659 documents — including a
 nightly GET at a payment gateway. Today's corpus yields **19 proposals over
 11 memories**.
 
+## Will this touch my memories?
+
+Short answer: it writes frontmatter stamps (`tier`, `modified`, provenance), creates new files on
+`import`, archives rather than overwrites on `import … replace`, and **never deletes anything from
+your memory folder**. Every one of those writes goes through one door that refuses any edit whose
+body differs, snapshots the previous bytes to `.memory-snapshots/` first, and writes atomically.
+
+If you would rather have the guarantee than the argument, set **`MEMORY_CURATED_READ_ONLY=1`** and the
+server writes nothing to your memory folder at all — it still indexes, searches, and captures
+conversations into its own `store/`. Nothing in retrieval depends on the stamps.
+
+The full inventory, the mutation-tested guards and the recommended setup for imported memories are in
+**[MEMORY-SAFETY.md](MEMORY-SAFETY.md)**.
+
+## Upgrading to 1.6 — exchange names changed on disk
+
+Auto-captured exchanges used to be named by their **position** in the transcript
+(`x-<session>-0042`). 1.6.0 names them by the **time the question was asked**
+(`x-<session>-20260903T054233800Z`). Position was the root of a week of store defects — a changed
+extractor rule renumbered hundreds of files and left duplicate memories behind, and a deletion bound
+computed from the ordinal removed a real one. A name that belongs to the exchange cannot do that.
+
+If you have an existing store, migrate once (the server keeps reading either shape in the meantime,
+and files sort into the same order before and after):
+
+```
+npm run migrate:names            # dry run — prints the plan and every pre-check, writes nothing
+npm run migrate:names -- --apply # renames, rewrites name: and Previous:, verifies, refuses on any failure
+memory({action: "index", scope: "staging"})   # then rebuild the staging index
+```
+
+Back up your `store/` first — it is gitignored, so that copy is the only one. The migration refuses
+to apply unless every file's timestamp compacts cleanly, no two files would share a name, and the new
+order equals the old order in every session; afterwards it verifies the count is unchanged, every
+`name:` equals its filename, no `Previous:` link dangles and nothing old-shaped remains.
+
+Two related additions: `npm run audit:store` compares the store against the transcripts it came
+from (orphans, duplicate bodies, order, dangling links; run it whenever something looks off), and
+`npm run release:capture` + `npm run install:capture-hooks` make the capture hooks run a **released
+copy** of the code under `dist/capture/` instead of your working tree — so an edit you are still
+testing can never touch your store on the next hook tick.
+
 ## Versioning the memory folder
 
 The curated memories had no version control, so a bad overwrite was unrecoverable — and the folder
@@ -1071,6 +1113,14 @@ scripts/verify-stdio.js      npm run verify — raw JSON-RPC, no client needed
 scripts/probes.json          the 32-probe benchmark set (queries are verbatim)
 scripts/verify-stdio.js      npm test — drives the server over raw stdio
 scripts/measure-*.js         where each tuning constant came from
+scripts/ingest-transcript.js a conversation becomes exchanges (x-<session>-<ask time>); folds mid-turn
+                             messages and subagent reports into the exchange they belong to
+scripts/auto-ingest.js       the Stop-hook entry: lock, debounce, run log, staging reindex
+scripts/timed-capture.mjs    npm run capture — walks every active transcript on a timer
+scripts/migrate-stable-names.mjs  npm run migrate:names — one-time move off positional names
+scripts/audit-store.mjs      npm run audit:store — store vs transcripts (lib/store-audit.js)
+scripts/release-capture.sh   npm run release:capture — the copy the hooks actually run (dist/capture)
+scripts/install-capture-hooks.sh  npm run install:capture-hooks — point hooks + LaunchAgent at it
 test/run-tests.js        npm test — exit code is the verdict
 test/fixtures/projects/  a FIXTURE second project's memory folder (17 hand-written
                          files). Deliberately NOT under ~/.claude/projects, so it can
@@ -1127,6 +1177,10 @@ Nothing here is a hard limit; they are the numbers, so you can decide.
 | var | default |
 |---|---|
 | `MEMORY_DIR` | the corpus path above (also suppresses project discovery and the handoff roots, so a fixture measures only its own corpus) |
+| `MEMORY_CURATED_READ_ONLY` | unset — set to `1` and the server writes **nothing** to your memory folder (see [MEMORY-SAFETY.md](MEMORY-SAFETY.md)) |
+| `MEMORY_SNAPSHOTS_PER_FILE` | `5` — previous versions kept in `<memory folder>/.memory-snapshots/` before any frontmatter edit; `0` keeps none |
+| `MEMORY_PRUNE_ORPHANS` | unset — set to `0` to stop the capture store pruning its own stale duplicates (never touches your memory folder) |
+| `MEMORY_ROOT` | the install directory — point a released copy of the code (`dist/capture/`) at another checkout's data |
 | `MEMORY_INDEX` | `./.memory-index.json` |
 | `MEMORY_STAGING_INDEX` | `./.staging-index.json` — `0` disables |
 | `MEMORY_HANDOFF_INDEX` | `./.handoff-index.json` — `0` disables |
