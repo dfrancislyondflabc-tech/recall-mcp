@@ -129,9 +129,15 @@ unchanged.
 ## Install
 
 ```bash
+git clone https://github.com/dfrancislyondflabc-tech/recall-mcp.git
 cd recall-mcp
 npm install
 ```
+
+Node 20 or 22. There is nothing to build and no global install — the server runs from this directory.
+
+> **Not the `recall-mcp` on npm.** That name belongs to a different project (a different self-hosted
+> memory server). This one is not published to npm; clone it.
 
 **Then tell it where your memories are.** It does **not** search your disk for them — there is no
 sensible default, so it does not guess. `MEMORY_DIR` (or `memoryDir` in `local-config.json`, copied
@@ -227,7 +233,6 @@ the measurement they came from:
 
 ```bash
 npm run measure-keyword-scale   # the absolute keyword scale
-npm run eval:state   # author's tree only — not distributed              # what the index currently contains
 npm run analyse-queries         # what has been asked of it
 ```
 
@@ -450,11 +455,10 @@ happened at that moment"*.
 ### Measuring it
 
 ```
-npm run eval:state   # author's tree only — not distributed        # can the corpus answer "did this finish?"
 npm run analyse-queries   # what callers actually did, and whether retries recovered
 ```
 
-`eval:state` runs `test/state-questions.json`, whose answers were **written down before the corpus
+`eval:state` (**author's tree only — not in the published package**) runs `test/state-questions.json`, whose answers were **written down before the corpus
 was queried** — grading after seeing results produces a test that passes for the wrong reason.
 Each case also carries a `proseControl` that is expected to *fail*; those controls are the
 measurement behind "query a term filter with identifiers, not prose". Baseline: 6/6 answered,
