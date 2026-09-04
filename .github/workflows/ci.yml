@@ -1,0 +1,69 @@
+name: CI
+
+# What this proves, and what it does not.
+#
+# `npm test` in the PUBLIC tree runs scripts/verify-stdio.js: it starts the real server over stdio
+# and drives it as a client does — tools listed, a search, a get, an absence, malformed input, and
+# the server surviving each. 30 checks. That is a genuine smoke test of the shipped artefact.
+#
+# It is NOT the author's full suite (1,223 checks). That suite cannot ship yet: it asserts against
+# the author's own memories by name, and the file itself carries real addresses because several
+# tests assert on redaction targets. Making a purpose-built public suite over the frozen fixtures is
+# tracked work, not a claim this workflow makes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['20', '22']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install --no-audit --no-fund
+      # A fresh HOME on purpose: the server must not need anything from the runner's home
+      # directory, and Windows + CRLF is the historically worst area in this project.
+      - run: npm test
+        env:
+          MEMORY_AUTHOR_CORPUS: '0'
+
+  index-and-search:
+    # End to end on the artefact: build an index over the shipped example memories and query it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: a memory folder with two memories
+        run: |
+          mkdir -p /tmp/mem
+          printf -- '---\nname: wheel-truing\ndescription: how to true a wheel\n---\n\nSeat the spokes then work opposite pairs until the rim runs true.\n' > /tmp/mem/wheel-truing.md
+          printf -- '---\nname: brake-bleed\ndescription: how to bleed hydraulic brakes\n---\n\nBleed from the caliper upward, keeping the reservoir topped up.\n' > /tmp/mem/brake-bleed.md
+      - name: index it
+        run: npm run index
+        env:
+          MEMORY_DIR: /tmp/mem
+          MEMORY_INDEX: /tmp/idx.json
+          MEMORY_STAGING_INDEX: '0'
+          MEMORY_HANDOFF_INDEX: '0'
+          MEMORY_PROJECTS_INDEX: '0'
+      - name: a missing root must FAIL, not report success
+        run: |
+          if MEMORY_DIR=/tmp/definitely-not-here MEMORY_INDEX=/tmp/bad.json \
+             MEMORY_STAGING_INDEX=0 MEMORY_HANDOFF_INDEX=0 MEMORY_PROJECTS_INDEX=0 \
+             npm run index; then
+            echo "::error::a nonexistent memoryDir reported success"; exit 1
+          fi
+          echo "a nonexistent memoryDir correctly exited non-zero"

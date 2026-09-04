@@ -52,13 +52,14 @@ git -C "$ROOT" archive HEAD | tar -x -C "$DEST"
 echo "== removing what must not ship"
 EXCLUDE=(
   test                              # asserts against the author's corpus; holds IPs, an address, a named fixture dir
-  .github/workflows                 # both workflows grep for a live credential BY VALUE
-                                    # (portable-macos.yml:103 greps for the literal, to prove
-                                    # it is absent from a zip) — the file therefore CONTAINS it.
-                                    # Narrowed from all of .github so ISSUE_TEMPLATE can ship;
-                                    # the release gate still scans everything that remains.
-  lib/alias-table.json              # one vendor's product catalogue; feature is off by default
-  scripts/build-alias-table.js      # scrapes that vendor's site
+  .github/workflows/portable-macos.yml    # these two grep for a live credential BY VALUE (to prove
+  .github/workflows/portable-windows.yml  # it is absent from a zip), so the files CONTAIN it.
+                                    # Excluded BY NAME, not by directory: excluding the whole
+                                    # directory also dropped .github/workflows/ci.yml and left the
+                                    # published repo with NO CI — the first thing a reviewer looks
+                                    # for. ci.yml names no credential and the release gate scans it
+                                    # like everything else that ships.
+                                    # Narrowed from all of .github so ISSUE_TEMPLATE can ship.
   scripts/build-zip.sh              # the author's packaging, embeds their paths
   scripts/probes.json               # benchmark fixture written from real customer questions
   scripts/run-probe-calibration.js  # measurement harnesses, all bound to the author's corpus
