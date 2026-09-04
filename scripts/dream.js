@@ -511,6 +511,56 @@ if (shadowRows.length) {
               (SUPERSESSION_MODE === 'on' ? '' : '  (logged, NOT queued)'));
 }
 
+// 🟥 PERSIST THE QUEUE BEFORE PRINTING IT.
+//
+// This script runs from the Stop hook as `dream.js --if-due 2>/dev/null || true`: stderr is
+// explicitly discarded and stdout is inherited by a hook host that keeps no file. So everything
+// below — every proposal, every candidate, the queue length itself — was written to a console
+// nobody would ever read. MEM-23 put it exactly: the circulating "19 proposals await review"
+// described a queue that did not exist.
+//
+// Two sinks, because they answer two different questions:
+//   .dream-queue.json   what is waiting RIGHT NOW (overwritten each run, so it cannot go stale)
+//   .dream-runs.jsonl   what this has been doing over time (append-only, one line per run)
+//
+// The snapshot carries the items themselves, bounded, so a reader can act on it without re-running
+// anything. Fail-open: a sink that cannot be written must never break the nightly run.
+try {
+  const dir = ownStoreDir();
+  mkdirSync(dir, { recursive: true });
+  // Its own timestamp: `nowIso` is declared further down the file, so reading it here threw a
+  // ReferenceError — which the catch below swallowed, leaving NO sink and NO error. That is the
+  // exact failure this change exists to remove, reproduced inside the fix for it. Hence also the
+  // console.error in the catch: a sink that fails silently is the same bug again.
+  const sinkAt = new Date().toISOString();
+  const summary = Object.fromEntries(Object.entries(byKind).map(([k, v]) => [k, v.length]));
+  writeFileSync(join(dir, '.dream-queue.json'), JSON.stringify({
+    at: sinkAt,
+    queued: queue.length,
+    byKind: summary,
+    items: queue.slice(0, 200).map((q) => ({
+      kind: q.kind, file: q.file, name: q.name,
+      // proposals are the actionable part; keep a few per item rather than all of them
+      proposals: Array.isArray(q.proposals) ? q.proposals.slice(0, 5) : undefined,
+      why: q.why || q.reason || undefined
+    }))
+  }, null, 2) + '\n', 'utf8');
+  appendFileSync(join(dir, '.dream-runs.jsonl'), JSON.stringify({
+    at: sinkAt,
+    trigger: IF_DUE ? 'hook' : 'manual',
+    corpusDocs: docs.length,
+    uncurated: uncurated.length,
+    hoursSinceLastRun: hoursSince === Infinity ? null : Number(hoursSince.toFixed(2)),
+    queued: queue.length,
+    byKind: summary
+  }) + '\n', 'utf8');
+} catch (e) {
+  // Fail-open on the RUN, loud on the SINK. Swallowing this silently is how the first version of
+  // this very block shipped broken.
+  console.error('[dream] could not write the queue sinks: ' + String(e && e.message || e).slice(0, 200));
+}
+
+
 console.log(`\n=== WORK QUEUE: ${queue.length} item(s) ===`);
 for (const [kind, items] of Object.entries(byKind)) {
   console.log(`\n[${kind}]  ${items.length}`);

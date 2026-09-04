@@ -10,6 +10,36 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.6.3] — 2026-09-04
+
+Three features were reporting into a void. Each was verified against real data before being changed.
+
+### Fixed
+
+- **A memory that disappears is now written down, not just warned about.** The vanish report — the
+  second net under a lost memory, catching at index time what the commit hook catches at commit time
+  — emitted through `console.error`, from inside a process whose stderr the host keeps nowhere. The
+  question it exists to answer ("when did those memories disappear") is asked *days* later, when any
+  console is long gone. It now appends JSONL beside the index: timestamp, the names that went, and
+  the document counts before and after. `MEMORY_VANISH_LOG` relocates it. Verified end to end:
+  delete 3 of 16 memories, rebuild, and the sink names all three with `16 → 13`.
+- **The nightly curation pass now records its queue.** It runs from a hook with `2>/dev/null` and
+  stdout inherited, so every proposal and candidate it found went to a console nobody reads. Two
+  sinks now: `.dream-queue.json` (what is waiting right now, overwritten each run so it cannot go
+  stale, with the items themselves) and `.dream-runs.jsonl` (one row per run over time). Verified
+  with a **non-empty** queue — a planted credential-bearing memory is recorded as
+  `{"secret-review": 1}` while the credential itself appears **zero** times in the sink.
+- **Graph-spread telemetry only records real queries now.** Measured on the live query log: of
+  **2,210** rows carrying `shadowDivergence`, **2,210 came from the test suite and 0 from real
+  traffic**. The measurement had never once observed a real query, so any conclusion drawn from it
+  would have been a statement about the project's own tests. It now applies the same `src`-based
+  filter the absence probe already used.
+
+### Testing
+
+The public suite grows to **48 checks** — the vanish sink is now a gated contract, mutation-tested
+(with the write removed, the gate reports `rows: 0` and fails).
+
 ## [1.6.2] — 2026-09-04
 
 Found by running the v1.6.1 release through an independent adversarial test pass. Every number below

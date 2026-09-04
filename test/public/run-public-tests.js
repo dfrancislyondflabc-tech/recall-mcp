@@ -51,6 +51,7 @@ function sandbox(extra = {}) {
       MEMORY_QUERY_SOURCE: 'test',
       MEMORY_AUTHOR_CORPUS: '0',
       MEMORY_MODEL_CACHE: join(ROOT, '.model-cache'),
+      MEMORY_VANISH_LOG: join(d, 'vanish.jsonl'),
       ...extra
     }
   };
@@ -76,7 +77,7 @@ function run(env, body, { cwd = ROOT } = {}) {
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', src],
     { encoding: 'utf8', env, cwd, maxBuffer: 64 * 1024 * 1024 });
   const m = /@@([\s\S]*)@@/.exec(r.stdout || '');
-  if (!m) return { __nores: true, stderr: String(r.stderr || '').slice(-400), status: r.status };
+  if (!m) return { __nores: true, stderr: String(r.stderr || '').slice(0, 240), status: r.status };
   try { return JSON.parse(m[1]); } catch { return { __unparsable: m[1].slice(0, 300) }; }
 }
 
@@ -274,6 +275,38 @@ group('the index is a cache of a directory, and knows it');
   check('a root that does not exist is REPORTED, not silently empty', r.missingRoots === 1,
     JSON.stringify(r));
   check('...and it indexed nothing from it', r.missingIndexed === 0);
+  rmSync(sb.dir, { recursive: true, force: true });
+}
+
+// =============================================================================================
+group('a memory that disappears is written down, not just warned about');
+{
+  const sb = sandbox();
+  copyFixtures(sb.env.MEMORY_DIR);
+  const r = run(sb.env, `
+    const { buildIndex } = await import(IDX);
+    const { unlinkSync, existsSync, readFileSync } = await import('node:fs');
+    const roots = [{ dir: process.env.MEMORY_DIR, corpus: 'curated', primary: true }];
+    await buildIndex({ dir: roots, out: process.env.MEMORY_INDEX });          // incremental path
+    for (const f of ['winter-storage.md', 'workshop-rota.md']) unlinkSync(process.env.MEMORY_DIR + '/' + f);
+    await buildIndex({ dir: roots, out: process.env.MEMORY_INDEX });          // the vanish path
+    const sink = process.env.MEMORY_VANISH_LOG;
+    const rows = existsSync(sink)
+      // String.fromCharCode(10) rather than a newline escape: this runs inside an OUTER template
+      // literal, which consumes \\n and \\r itself, so the child received a real line break and a
+      // SyntaxError. Twice — once as a string escape, once inside a regex.
+      ? readFileSync(sink, 'utf8').trim().split(String.fromCharCode(10)).map((l) => JSON.parse(l)) : [];
+    const last = rows[rows.length - 1] || {};
+    out({ rows: rows.length, vanished: last.vanished, names: last.names || [],
+          hasTime: typeof last.at === 'string', prev: last.previousDocs, now: last.currentDocs });`,
+    );
+  // The warning goes to stderr, which the hook host keeps nowhere. "When did those memories
+  // disappear" is asked days later, so the record has to outlive the console.
+  check('the disappearance is appended to a durable sink', r.rows === 1, JSON.stringify(r).slice(0, 200));
+  check('...naming exactly what went', r.vanished === 2 &&
+    ['winter-storage', 'workshop-rota'].every((n) => (r.names || []).includes(n)), JSON.stringify(r.names));
+  check('...with a timestamp and the before/after counts',
+    r.hasTime === true && r.prev === 16 && r.now === 14, JSON.stringify(r));
   rmSync(sb.dir, { recursive: true, force: true });
 }
 
