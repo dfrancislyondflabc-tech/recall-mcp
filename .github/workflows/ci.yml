@@ -2,14 +2,22 @@ name: CI
 
 # What this proves, and what it does not.
 #
-# `npm test` in the PUBLIC tree runs scripts/verify-stdio.js: it starts the real server over stdio
-# and drives it as a client does — tools listed, a search, a get, an absence, malformed input, and
-# the server surviving each. 30 checks. That is a genuine smoke test of the shipped artefact.
+# `npm test` runs two things, 75 checks in total, both on the SHIPPED tree:
 #
-# It is NOT the author's full suite (1,223 checks). That suite cannot ship yet: it asserts against
-# the author's own memories by name, and the file itself carries real addresses because several
-# tests assert on redaction targets. Making a purpose-built public suite over the frozen fixtures is
-# tracked work, not a claim this workflow makes.
+#   scripts/verify-stdio.js         30 — starts the real server over stdio and drives it as a client
+#                                        does: tools listed, a search, a get, an absence, malformed
+#                                        input, and the server surviving each.
+#   test/public/run-public-tests.js 45 — contracts over committed fixtures: retrieval, word-order
+#                                        discrimination, the corpus boundary (symlink escape, path
+#                                        traversal), encodings (CRLF/BOM/mixed/unicode),
+#                                        index integrity, cross-process index reload, the guarded
+#                                        write door, and read-only mode.
+#
+# Neither depends on the author's memories, on wall-clock time, or on how many documents exist.
+#
+# It is NOT the author's private suite (1,223 checks), which asserts against their own memories by
+# name and cannot ship — the release gate refuses it because several of its tests assert on real
+# redaction targets and therefore contain them.
 
 on:
   push:

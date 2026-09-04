@@ -99,28 +99,34 @@ for path in "${EXCLUDE[@]}"; do
   if [ -e "$DEST/$path" ]; then rm -rf "${DEST:?}/$path"; echo "    - $path"; fi
 done
 
-# The alias MECHANISM stays; only the vendor data goes. Say so where someone will look.
-cat > "$DEST/lib/ALIAS-TABLE.md" <<'NOTE'
-# Optional: lib/alias-table.json
+# == RE-ADD the two test subtrees that ARE safe to ship ==
+#
+# `test` is excluded above and STAYS excluded, deliberately: run-tests.js asserts against the
+# author's own memories by name and carries real addresses and private IPs (several tests assert on
+# genuine redaction targets), and test/fixtures/projects/ is a copy of the author's memory folder.
+# The release gate refuses all of it, correctly.
+#
+# So the shippable parts are named POSITIVELY here rather than by adding 60+ exclusions. That way a
+# new file under test/ is private by DEFAULT, and only these two paths can ever ship:
+#
+#   test/public/               a suite that runs only on fixtures — no author corpus, no clock, no
+#                              dependence on how many documents exist
+#   test/fixtures/gold-corpus/ 16 committed memories about a bike workshop
+#
+# Both are scanned by the release gate below like everything else in the tree.
+for keep in test/public test/fixtures/gold-corpus; do
+  if [ -e "$ROOT/$keep" ]; then
+    mkdir -p "$DEST/$(dirname "$keep")"
+    cp -R "$ROOT/$keep" "$DEST/$(dirname "$keep")/"
+    echo "    + $keep (re-added: safe to ship)"
+  else
+    echo "    !! $keep not found in the repo — the public suite would not ship"; exit 5
+  fi
+done
 
-`lib/aliases.js` can expand a query term to a family stem — useful when your corpus talks
-about product or part numbers that share a prefix (`XY-673A` and `XY-873A` are both
-`XY-x73A`). It is **off unless `MEMORY_SKU_ALIAS=1`**, and it looks for `lib/alias-table.json`.
 
-No table ships, because a table is domain data and yours will not be ours. If the file is
-absent the loader falls back to an empty table and retrieval is unchanged — verified: the
-same query returns the same document at the same score with and without it.
-
-To supply your own:
-
-```json
-{ "modelToFamilies": { "xy-673a": ["xy-x73a"] }, "families": { "xy-x73a": ["xy-673a", "xy-873a"] } }
-```
-
-Keys are lowercased. A model must never alias to another model — only to a stem — or a
-query for one product will retrieve a different one.
-NOTE
-echo "    + lib/ALIAS-TABLE.md (the mechanism stays, the data does not)"
+# (the alias layer was removed in v1.6.2 — 0 of 12 target questions improved against its
+#  own pre-registered bar, and it shipped reading a data file that was excluded)
 
 # Document the per-machine file that is deliberately absent.
 cat > "$DEST/local-config.example.json" <<'NOTE'
@@ -162,10 +168,13 @@ for (const [k,v] of Object.entries(p.scripts||{})) {
     if (!fs.existsSync(require("path").join(dir,m[0]))) { delete p.scripts[k]; dropped.push(k+" -> "+m[0]); break; }
   }
 }
-p.scripts.test = "node scripts/verify-stdio.js";
+// npm test runs BOTH: the artefact smoke test over stdio, and the fixture suite.
+  p.scripts.test = "node scripts/verify-stdio.js && node test/public/run-public-tests.js";
+  p.scripts["test:stdio"] = "node scripts/verify-stdio.js";
+  p.scripts["test:full"] = "node test/public/run-public-tests.js";
 fs.writeFileSync(process.argv[1], JSON.stringify(p,null,2)+"\n");
 for (const d of dropped) console.log("    - npm run "+d+" (target not shipped)");
-console.log("    ~ npm test -> node scripts/verify-stdio.js");
+console.log("    ~ npm test -> verify-stdio + the public fixture suite");
 ' "$DEST/package.json"
 
 # ONE MACHINE'S DENYLIST IS NOT A POLICY. secrets-exclude.json is two things at once: the

@@ -19,7 +19,9 @@
     "install:capture-hooks": "zsh scripts/install-capture-hooks.sh",
     "audit:store": "node scripts/audit-store.mjs",
     "migrate:names": "node scripts/migrate-stable-names.mjs",
-    "test": "node scripts/verify-stdio.js"
+    "test:full": "node test/public/run-public-tests.js",
+    "test": "node scripts/verify-stdio.js && node test/public/run-public-tests.js",
+    "test:stdio": "node scripts/verify-stdio.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
