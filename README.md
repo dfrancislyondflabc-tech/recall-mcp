@@ -1148,6 +1148,38 @@ and friends), the vector cache, the probe sidecar, and the curation state. All o
 corpus text, which is why none of them is ever committed and why `scripts/commit-memories.js`
 refuses to add a remote.
 
+## Known limitations
+
+Measured, reproducible, and not yet fixed. Listed here because finding them yourself and not seeing
+them mentioned is worse than reading about them.
+
+**A long verbatim quote can retrieve worse than a short one.** Quote a sentence from a memory's body
+and the memory usually comes back first. Keep adding words from that same sentence and it can drop
+out of the results entirely:
+
+| query | rank of the source memory |
+|---|---|
+| `silently corrupt which is the` | 1 |
+| `silently corrupt which is the whole` | not returned |
+
+Why: the keyword leg drops any document scoring below `covFloor × ideal`, where `ideal` assumes the
+query's terms at full field weight. Body text carries `fieldWeights.body = 0.3` against `name` 3.0,
+so a body-only match sits near 30% of ideal and cannot clear a 60% floor. It is then carried by the
+dense and phrase legs alone, and long queries full of common words dilute both.
+
+Lowering that floor was tried and **rejected on measurement** — over 45 verbatim body sentences it
+moved nothing (rank-1 25 → 25, missing 18 → 18), so the floor is not the binding constraint. The
+same measurement showed the misses concentrate in large documents whose `#section` children compete
+with their parent: restricted to whole documents the leg is healthy (rank-1 24 of 28).
+
+**Practical workaround:** quote a *short* distinctive fragment rather than a whole sentence, or use
+`latest` with an identifier — that path is a literal term filter and finds body content the ranker
+misses, including commit SHAs.
+
+**CR-only line endings (classic Mac) do not parse as frontmatter.** CRLF and a UTF-8 BOM both parse
+correctly. A CR-only file is reported honestly (`hasFrontmatter: false`) rather than silently
+mis-parsed, but its name, type and headings are lost. Convert such files to LF or CRLF.
+
 ## What it costs at size
 
 Measured on one laptop, so treat them as shape rather than benchmark. The fixed cost is the

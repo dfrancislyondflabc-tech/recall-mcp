@@ -10,6 +10,47 @@ returns, or what a file on disk looks like. Internal refactors are left out. Whe
 because something measurably went wrong, the number is given — this project's claims are supposed to
 be checkable.
 
+## [1.6.2] — 2026-09-04
+
+Found by running the v1.6.1 release through an independent adversarial test pass. Every number below
+was measured, and one proposed fix was **rejected** because measuring it showed it did nothing.
+
+### Fixed
+
+- **A long-running server answered from an index another process had already rebuilt.** The parsed
+  index is cached for the life of the process, and the freshness check compared the *corpus* against
+  that cached copy — never the cached copy against the index *file*. Measured: the on-disk index had
+  been rebuilt at 13:36Z while the server was still answering from 06:51Z. The same query returned
+  **0 results through the server and 2 against the index on disk**, with the response saying *"No
+  document in any corpus mentions every term."* A confident absence over an answer that already
+  exists is the worst thing a memory system can say. `ensureFresh` now compares the on-disk
+  `builtAt` (a 4 KB header read, not a parse of a 56 MB file) and re-reads when it is newer.
+- **A `memoryDir` that does not exist built an empty index and reported success.** `files indexed: 0`,
+  exit 0, and — measured — **zero** occurrences of `not exist`, `missing`, `ENOENT`, `warn` or `error`
+  anywhere in the output. `npm run index` now names the missing path and the setting that points at
+  it, and exits non-zero. A root that exists but is empty still exits 0: that is a fresh install.
+- **`corpus : [object Object]`** in the index report — the corpus root list was template-stringified,
+  in the first command the README tells a new user to run.
+- **`MEMORY_SNAPSHOTS_PER_FILE=0` (or negative) silently deleted every snapshot**, including the one
+  just written, removing the recovery path `MEMORY-SAFETY.md` advertises. Now clamped to at least 1.
+  A non-numeric value already failed open; only the numeric cases failed closed.
+
+### Removed
+
+- **The SKU/model family-alias layer.** Re-measured against its own frozen pre-registered set:
+  **0 of 12** target questions improved, bar was ≥8. It also shipped broken — `lib/aliases.js` was in
+  the release tree while its generated data file was excluded, so it read a file that was not there.
+  Proved to be a no-op before removal: 46 real queries snapshotted before and after **with the clock
+  frozen**, byte-identical. (Unfrozen, `recencyFactor` drifts ~1e-4 an hour and looks like a change.)
+
+### Not changed, and why
+
+- **A long verbatim body quote can retrieve worse than a short one.** Diagnosed to the keyword
+  floor, then the proposed fix was **rejected on measurement**: over 45 verbatim body sentences it
+  moved nothing (rank-1 25 → 25, missing 18 → 18), and stronger settings made it worse. The floor is
+  not the binding constraint. Now documented under **Known limitations** in the README, with the
+  workaround, rather than silently carried.
+
 ## [1.6.1] — 2026-09-03
 
 ### Added
